@@ -22,6 +22,7 @@ public:
     void orbit(float delta_azimuth, float delta_elevation);
     void pan(float delta_x, float delta_y);   // in view-plane units
     void zoom(float delta);                    // positive = closer
+    void reset();
 
     // Accessors
     float     distance()  const { return m_distance; }
@@ -32,4 +33,9 @@ private:
     float     m_distance;
     float     m_azimuth;    // degrees
     float     m_elevation;  // degrees
+
+    glm::vec3 m_default_target;
+    float     m_default_distance;
+    float     m_default_azimuth;
+    float     m_default_elevation;
 };

@@ -15,8 +15,8 @@ check() {
 }
 
 echo "=== Checking dependencies ==="
-check "gtk4"
-check "epoxy"  # GL function loader — required by GtkGLArea
+check "glfw3"
+check "epoxy"
 
 # GLM is header-only; check the include path directly
 if [ -f /usr/include/glm/glm.hpp ] || [ -f /usr/local/include/glm/glm.hpp ]; then
@@ -40,7 +40,7 @@ if command -v apt-get &>/dev/null; then
     APT_PKGS=()
     for pkg in "${MISSING[@]}"; do
         case "$pkg" in
-            gtk4)       APT_PKGS+=("libgtk-4-dev") ;;
+            glfw3)      APT_PKGS+=("libglfw3-dev") ;;
             epoxy)      APT_PKGS+=("libepoxy-dev") ;;
             libglm-dev) APT_PKGS+=("libglm-dev") ;;
         esac
@@ -51,7 +51,7 @@ elif command -v pacman &>/dev/null; then
     PACMAN_PKGS=()
     for pkg in "${MISSING[@]}"; do
         case "$pkg" in
-            gtk4)       PACMAN_PKGS+=("gtk4") ;;
+            glfw3)      PACMAN_PKGS+=("glfw") ;;
             epoxy)      PACMAN_PKGS+=("libepoxy") ;;
             libglm-dev) PACMAN_PKGS+=("glm") ;;
         esac
@@ -61,7 +61,7 @@ elif command -v dnf &>/dev/null; then
     DNF_PKGS=()
     for pkg in "${MISSING[@]}"; do
         case "$pkg" in
-            gtk4)       DNF_PKGS+=("gtk4-devel") ;;
+            glfw3)      DNF_PKGS+=("glfw-devel") ;;
             epoxy)      DNF_PKGS+=("libepoxy-devel") ;;
             libglm-dev) DNF_PKGS+=("glm-devel") ;;
         esac

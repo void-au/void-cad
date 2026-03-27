@@ -7,16 +7,19 @@ public:
     Renderer()  = default;
     ~Renderer();
 
-    // Call once while the GL context is current (from on_realize)
+    // Call once while the GL context is current.
     void init();
 
-    // Update stored viewport dimensions (from on_resize)
+    // Update stored viewport dimensions.
     void set_viewport(int width, int height);
 
-    // Issue draw calls (from on_render); GL context must be current
+    // Issue draw calls; GL context must be current.
     void draw();
 
-    // Exposed so GTK input handlers can manipulate the camera directly
+    void set_wireframe(bool enabled) { m_wireframe = enabled; }
+    bool wireframe() const { return m_wireframe; }
+
+    // Exposed so input handlers can manipulate the camera directly.
     OrbitCamera camera;
 
 private:
@@ -35,6 +38,11 @@ private:
     GLuint m_cube_vao  = 0;
     GLuint m_cube_vbo  = 0;
 
+    // Solid unit cube (12 triangles)
+    GLuint m_solid_cube_vao = 0;
+    GLuint m_solid_cube_vbo = 0;
+
     int m_width  = 1280;
     int m_height = 720;
+    bool m_wireframe = false;
 };

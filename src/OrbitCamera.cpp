@@ -11,6 +11,10 @@ OrbitCamera::OrbitCamera(glm::vec3 target, float distance,
     , m_distance(distance)
     , m_azimuth(azimuth)
     , m_elevation(elevation)
+    , m_default_target(target)
+    , m_default_distance(distance)
+    , m_default_azimuth(azimuth)
+    , m_default_elevation(elevation)
 {}
 
 glm::vec3 OrbitCamera::eye() const
@@ -54,4 +58,12 @@ void OrbitCamera::pan(float dx, float dy)
 void OrbitCamera::zoom(float delta)
 {
     m_distance = std::clamp(m_distance - delta, 0.5f, 500.0f);
+}
+
+void OrbitCamera::reset()
+{
+    m_target = m_default_target;
+    m_distance = m_default_distance;
+    m_azimuth = m_default_azimuth;
+    m_elevation = m_default_elevation;
 }

@@ -3,14 +3,15 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <cstdio>
+#include <string>
 // OrbitCamera is included transitively via Renderer.h
 
 // ---------------------------------------------------------------------------
-// GLSL shaders
+// GLSL shaders — body is API-agnostic; the #version line is prepended at
+// runtime so the same source works with both desktop GL 3.3+ and GLES 3.2+.
 // ---------------------------------------------------------------------------
 
-static const char *VERT_SRC = R"glsl(
-#version 330 core
+static const char *VERT_BODY = R"glsl(
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aColor;
 uniform mat4 uMVP;
@@ -22,8 +23,8 @@ void main()
 }
 )glsl";
 
-static const char *FRAG_SRC = R"glsl(
-#version 330 core
+static const char *FRAG_BODY = R"glsl(
+precision mediump float;
 in  vec3 vColor;
 out vec4 FragColor;
 void main()
@@ -31,6 +32,16 @@ void main()
     FragColor = vec4(vColor, 1.0);
 }
 )glsl";
+
+// Return the appropriate #version header for the current GL context.
+static std::string glsl_version_header()
+{
+    const char *ver = reinterpret_cast<const char *>(glGetString(GL_VERSION));
+    // GLES version strings start with "OpenGL ES"
+    if (ver && std::string(ver).find("OpenGL ES") != std::string::npos)
+        return "#version 320 es\n";
+    return "#version 330 core\n";
+}
 
 // ---------------------------------------------------------------------------
 // Geometry data  (interleaved: x y z  r g b)
@@ -68,6 +79,27 @@ static const float CUBE_VERTS[] = {
      0.5f,-0.5f,-0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,
      0.5f, 0.5f,-0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,
     -0.5f, 0.5f,-0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,
+};
+
+static const float SOLID_CUBE_VERTS[] = {
+    // front
+    -0.5f,-0.5f, 0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,
+    -0.5f,-0.5f, 0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,
+    // back
+    -0.5f,-0.5f,-0.5f, g,g,g,   -0.5f, 0.5f,-0.5f, g,g,g,    0.5f, 0.5f,-0.5f, g,g,g,
+    -0.5f,-0.5f,-0.5f, g,g,g,    0.5f, 0.5f,-0.5f, g,g,g,    0.5f,-0.5f,-0.5f, g,g,g,
+    // left
+    -0.5f,-0.5f,-0.5f, g,g,g,   -0.5f,-0.5f, 0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,
+    -0.5f,-0.5f,-0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,   -0.5f, 0.5f,-0.5f, g,g,g,
+    // right
+     0.5f,-0.5f,-0.5f, g,g,g,    0.5f, 0.5f,-0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,
+     0.5f,-0.5f,-0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,
+    // top
+    -0.5f, 0.5f,-0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,
+    -0.5f, 0.5f,-0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,    0.5f, 0.5f,-0.5f, g,g,g,
+    // bottom
+    -0.5f,-0.5f,-0.5f, g,g,g,    0.5f,-0.5f,-0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,
+    -0.5f,-0.5f,-0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,   -0.5f,-0.5f, 0.5f, g,g,g,
 };
 
 // ---------------------------------------------------------------------------
@@ -138,8 +170,12 @@ static void upload_line_vao(GLuint &vao, GLuint &vbo,
 
 void Renderer::init()
 {
-    GLuint vert = compile_shader(GL_VERTEX_SHADER,   VERT_SRC);
-    GLuint frag = compile_shader(GL_FRAGMENT_SHADER, FRAG_SRC);
+    std::string hdr  = glsl_version_header();
+    std::string vert_src = hdr + VERT_BODY;
+    std::string frag_src = hdr + FRAG_BODY;
+
+    GLuint vert = compile_shader(GL_VERTEX_SHADER,   vert_src.c_str());
+    GLuint frag = compile_shader(GL_FRAGMENT_SHADER, frag_src.c_str());
     m_program   = link_program(vert, frag);
     m_uMVP      = glGetUniformLocation(m_program, "uMVP");
 
@@ -147,8 +183,11 @@ void Renderer::init()
                     AXIS_VERTS, sizeof(AXIS_VERTS));
     upload_line_vao(m_cube_vao, m_cube_vbo,
                     CUBE_VERTS, sizeof(CUBE_VERTS));
+    upload_line_vao(m_solid_cube_vao, m_solid_cube_vbo,
+                    SOLID_CUBE_VERTS, sizeof(SOLID_CUBE_VERTS));
 
     glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
+    glEnable(GL_DEPTH_TEST);
     glLineWidth(1.5f);
 }
 
@@ -171,13 +210,17 @@ void Renderer::draw()
     glUseProgram(m_program);
     glUniformMatrix4fv(m_uMVP, 1, GL_FALSE, glm::value_ptr(mvp));
 
-    // Draw axis gizmo
+    if (m_wireframe) {
+        glBindVertexArray(m_cube_vao);
+        glDrawArrays(GL_LINES, 0, 24);
+    } else {
+        glBindVertexArray(m_solid_cube_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+
+    // Draw axis gizmo after the cube so it stays visible.
     glBindVertexArray(m_axis_vao);
     glDrawArrays(GL_LINES, 0, 6);
-
-    // Draw wireframe cube
-    glBindVertexArray(m_cube_vao);
-    glDrawArrays(GL_LINES, 0, 24);
 
     glBindVertexArray(0);
 }
@@ -188,5 +231,7 @@ Renderer::~Renderer()
     glDeleteBuffers(1, &m_axis_vbo);
     glDeleteVertexArrays(1, &m_cube_vao);
     glDeleteBuffers(1, &m_cube_vbo);
+    glDeleteVertexArrays(1, &m_solid_cube_vao);
+    glDeleteBuffers(1, &m_solid_cube_vbo);
     glDeleteProgram(m_program);
 }

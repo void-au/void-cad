@@ -1,12 +1,12 @@
 # void-cad
 
-> A free, open-source 3D CAD modelling application built with C++, GTK4, and OpenGL.
+> A free, open-source 3D CAD modelling application built with C++, OpenGL, GLFW, and a fully custom UI layer.
 
 ---
 
 ## Overview
 
-Void-CAD is a lightweight, cross-platform CAD modelling tool written in modern C++. It uses **GTK4** for the application shell and **OpenGL 3.3** (core profile) for the 3D viewport, with **GLM** handling all vector/matrix math. The goal is a clean, focused CAD environment — no bloat, no proprietary lock-in.
+Void-CAD is a lightweight, cross-platform CAD modelling tool written in modern C++. It uses **GLFW** for the window and input layer, **OpenGL 3.3** for rendering, a **fully custom-drawn UI** for toolbars and menus, and **GLM** for vector/matrix math. The goal is a clean, focused CAD environment — no bloat, no proprietary lock-in.
 
 ---
 
@@ -22,7 +22,7 @@ Void-CAD is a lightweight, cross-platform CAD modelling tool written in modern C
 
 ### Prerequisites
 
-Run the dependency helper to install required system libraries (GTK4, GLEW/GLAD, GLM, OpenGL):
+Run the dependency helper to install required system libraries (GLFW, Epoxy, GLM, OpenGL):
 
 ```bash
 ./deps.sh

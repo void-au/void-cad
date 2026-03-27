@@ -8,14 +8,13 @@ OUTDIR="build"
 TARGET="$OUTDIR/void-cad"
 
 # Gather pkg-config flags
-GTK_CFLAGS=$(pkg-config --cflags gtk4)
-GTK_LIBS=$(pkg-config --libs gtk4)
-# epoxy handles GL function loading and is already a GTK4 dependency
+GLFW_CFLAGS=$(pkg-config --cflags glfw3)
+GLFW_LIBS=$(pkg-config --libs glfw3)
 EPOXY_CFLAGS=$(pkg-config --cflags epoxy)
 EPOXY_LIBS=$(pkg-config --libs epoxy)
 
-CFLAGS_ALL="$CXXFLAGS $GTK_CFLAGS $EPOXY_CFLAGS"
-LIBS_ALL="$GTK_LIBS $EPOXY_LIBS"
+CFLAGS_ALL="$CXXFLAGS $GLFW_CFLAGS $EPOXY_CFLAGS"
+LIBS_ALL="$GLFW_LIBS $EPOXY_LIBS"
 
 # Collect all .cpp sources under src/
 SRCS=$(find src -name '*.cpp')
