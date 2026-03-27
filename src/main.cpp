@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <string_view>
@@ -25,18 +26,20 @@ constexpr float kMenuGap = 3.0f;
 constexpr float kMenuPanelPadding = 6.0f;
 constexpr float kBadgePaddingX = 8.0f;
 constexpr float kBadgeHeight = 24.0f;
+constexpr double kDoubleClickTimeSeconds = 0.30;
+constexpr double kDoubleClickDistancePx = 8.0;
 
 enum class ToolMode {
     None,
-    Select,
     Sketch,
 };
 
 struct UiLayout {
     std::array<UiRect, 4> menu_buttons{};
-    std::array<UiRect, 5> toolbar_buttons{};
+    std::array<UiRect, 4> toolbar_buttons{};
     UiRect open_menu_panel{};
     std::vector<UiRect> open_menu_items;
+    std::array<UiRect, 3> sketch_tool_buttons{};
 };
 
 struct AppState {
@@ -56,7 +59,17 @@ struct AppState {
 
     bool left_down = false;
     bool middle_down = false;
+    bool right_down = false;
     bool left_captured_by_ui = false;
+    bool left_dragged = false;
+    bool middle_captured_by_ui = false;
+    bool middle_dragged = false;
+    bool right_dragged = false;
+    double left_press_x = 0.0;
+    double left_press_y = 0.0;
+    double last_middle_click_time = -1.0;
+    double last_middle_click_x = 0.0;
+    double last_middle_click_y = 0.0;
 
     int open_menu = -1;
     bool wireframe = false;
@@ -89,8 +102,12 @@ static const std::array<const std::vector<std::string> *, 4> kMenuItems = {
     &kFileItems, &kEditItems, &kViewItems, &kHelpItems
 };
 
-static const std::array<const char *, 5> kToolbarLabels = {
-    "RESET CAMERA", "WIREFRAME", "ISO/PERSP", "SELECT", "SKETCH"
+static const std::array<const char *, 4> kToolbarLabels = {
+    "RESET CAMERA", "WIREFRAME", "ISO/PERSP", "SKETCH"
+};
+
+static const std::array<const char *, 3> kSketchToolLabels = {
+    "LINE", "RECT", "CIRCLE"
 };
 
 UiColor rgba(float r, float g, float b, float a)
@@ -158,6 +175,22 @@ UiLayout build_ui_layout(const AppState &app)
         }
     }
 
+    if (app.tool_mode == ToolMode::Sketch) {
+        float total_width = 0.0f;
+        for (const char *label : kSketchToolLabels) {
+            total_width += button_width(app.ui, label);
+        }
+        total_width += kButtonGap * static_cast<float>(kSketchToolLabels.size() - 1);
+
+        float x = static_cast<float>(app.window_width) - kOuterMargin - total_width;
+        const float y = kOuterMargin + kButtonHeight + 8.0f;
+        for (std::size_t i = 0; i < kSketchToolLabels.size(); ++i) {
+            const float width = button_width(app.ui, kSketchToolLabels[i]);
+            layout.sketch_tool_buttons[i] = {x, y, width, kButtonHeight - 4.0f};
+            x += width + kButtonGap;
+        }
+    }
+
     return layout;
 }
 
@@ -188,6 +221,14 @@ bool point_hits_ui(const AppState &app)
         }
     }
 
+    if (app.tool_mode == ToolMode::Sketch) {
+        for (const UiRect &rect : layout.sketch_tool_buttons) {
+            if (rect.contains(app.mouse_x, app.mouse_y)) {
+                return true;
+            }
+        }
+    }
+
     return false;
 }
 
@@ -196,16 +237,89 @@ void set_status(AppState &app, std::string text)
     app.status = std::move(text);
 }
 
+std::string primitive_status_label(const Renderer::PrimitiveHit &hit)
+{
+    if (!hit.valid()) {
+        return "SELECTION CLEARED";
+    }
+
+    if (hit.type == Renderer::PrimitiveType::Face) {
+        return "FACE " + std::to_string(hit.index + 1) + " SELECTED";
+    }
+
+    if (hit.type == Renderer::PrimitiveType::Edge) {
+        return "EDGE " + std::to_string(hit.index + 1) + " SELECTED";
+    }
+
+    return "SELECTION CLEARED";
+}
+
+std::string sketch_status_label(const AppState &app)
+{
+    std::string label = std::string("SKETCH — ") + app.renderer.sketch_tool_name();
+    if (app.renderer.sketch_has_preview()) {
+        label += " ACTIVE";
+    }
+    return label;
+}
+
+std::string sketch_constraint_label(const AppState &app)
+{
+    return std::string("CONSTRAINT — ") + app.renderer.sketch_constraint_hint();
+}
+
+void exit_sketch_mode(AppState &app)
+{
+    app.renderer.end_sketch();
+    app.tool_mode = ToolMode::None;
+    set_status(app, "SKETCH MODE EXITED");
+}
+
+void enter_sketch_mode(AppState &app)
+{
+    app.renderer.begin_sketch(app.renderer.selected_hit());
+    app.tool_mode = ToolMode::Sketch;
+
+    const auto &selected = app.renderer.selected_hit();
+    if (selected.valid() && selected.type == Renderer::PrimitiveType::Face) {
+        set_status(app, "SKETCH MODE — FACE PLANE");
+    } else {
+        set_status(app, "SKETCH MODE — DEFAULT XY PLANE");
+    }
+
+    app.renderer.update_sketch_cursor(app.mouse_x, app.mouse_y);
+}
+
+void set_sketch_tool(AppState &app, Renderer::SketchTool tool)
+{
+    app.renderer.set_sketch_tool(tool);
+    set_status(app, std::string("SKETCH TOOL — ") + app.renderer.sketch_tool_name());
+}
+
+void apply_viewport_selection_click(AppState &app)
+{
+    app.renderer.update_hovered(app.mouse_x, app.mouse_y);
+    if (app.renderer.hovered_hit().valid()) {
+        app.renderer.select_hovered();
+        set_status(app, primitive_status_label(app.renderer.selected_hit()));
+    } else {
+        app.renderer.clear_selection();
+        set_status(app, "SELECTION CLEARED");
+    }
+}
+
 void toggle_tool_mode(AppState &app, ToolMode mode)
 {
     if (app.tool_mode == mode) {
-        app.tool_mode = ToolMode::None;
-        set_status(app, "TOOL MODE CLEARED");
+        if (mode == ToolMode::Sketch) {
+            exit_sketch_mode(app);
+        }
         return;
     }
 
-    app.tool_mode = mode;
-    set_status(app, mode == ToolMode::Select ? "SELECT MODE" : "SKETCH MODE");
+    if (mode == ToolMode::Sketch) {
+        enter_sketch_mode(app);
+    }
 }
 
 void toggle_wireframe(AppState &app)
@@ -247,9 +361,6 @@ void handle_toolbar_action(AppState &app, int button_index)
         toggle_projection_mode(app);
         break;
     case 3:
-        toggle_tool_mode(app, ToolMode::Select);
-        break;
-    case 4:
         toggle_tool_mode(app, ToolMode::Sketch);
         break;
     default:
@@ -323,6 +434,20 @@ bool handle_left_press(AppState &app)
         if (layout.toolbar_buttons[i].contains(app.mouse_x, app.mouse_y)) {
             handle_toolbar_action(app, static_cast<int>(i));
             return true;
+        }
+    }
+
+    if (app.tool_mode == ToolMode::Sketch) {
+        for (std::size_t i = 0; i < layout.sketch_tool_buttons.size(); ++i) {
+            if (layout.sketch_tool_buttons[i].contains(app.mouse_x, app.mouse_y)) {
+                switch (i) {
+                case 0: set_sketch_tool(app, Renderer::SketchTool::Line); break;
+                case 1: set_sketch_tool(app, Renderer::SketchTool::Rectangle); break;
+                case 2: set_sketch_tool(app, Renderer::SketchTool::Circle); break;
+                default: break;
+                }
+                return true;
+            }
         }
     }
 
@@ -446,11 +571,6 @@ void render_ui(AppState &app)
                 layout.toolbar_buttons[3],
                 kToolbarLabels[3],
                 layout.toolbar_buttons[3].contains(app.mouse_x, app.mouse_y),
-                app.tool_mode == ToolMode::Select);
-    draw_button(app.ui,
-                layout.toolbar_buttons[4],
-                kToolbarLabels[4],
-                layout.toolbar_buttons[4].contains(app.mouse_x, app.mouse_y),
                 app.tool_mode == ToolMode::Sketch);
 
     if (app.open_menu >= 0) {
@@ -479,6 +599,31 @@ void render_ui(AppState &app)
 
     draw_badge(app.ui, status, app.status);
     draw_badge(app.ui, fps_badge, fps);
+
+    if (app.tool_mode == ToolMode::Sketch) {
+        const UiRect sketch_badge = badge_rect(app.ui,
+                                               kOuterMargin,
+                                               kOuterMargin + kButtonHeight + 10.0f,
+                                               sketch_status_label(app));
+        draw_badge(app.ui, sketch_badge, sketch_status_label(app));
+
+        const UiRect constraint_badge = badge_rect(app.ui,
+                                                   kOuterMargin,
+                                                   sketch_badge.y + sketch_badge.h + 6.0f,
+                                                   sketch_constraint_label(app));
+        draw_badge(app.ui, constraint_badge, sketch_constraint_label(app));
+
+        for (std::size_t i = 0; i < layout.sketch_tool_buttons.size(); ++i) {
+            Renderer::SketchTool tool = Renderer::SketchTool::Line;
+            if (i == 1) tool = Renderer::SketchTool::Rectangle;
+            if (i == 2) tool = Renderer::SketchTool::Circle;
+            draw_button(app.ui,
+                        layout.sketch_tool_buttons[i],
+                        kSketchToolLabels[i],
+                        layout.sketch_tool_buttons[i].contains(app.mouse_x, app.mouse_y),
+                        app.renderer.sketch_tool() == tool);
+        }
+    }
 
     app.ui.flush();
 }
@@ -520,11 +665,37 @@ void cursor_position_callback(GLFWwindow *window, double xpos, double ypos)
     const double dx = xpos - app->last_drag_x;
     const double dy = ypos - app->last_drag_y;
 
+    if (app->left_down && !app->left_captured_by_ui && (std::fabs(dx) > 0.5 || std::fabs(dy) > 0.5)) {
+        app->left_dragged = true;
+    }
+
+    if (app->middle_down && !app->middle_captured_by_ui && (std::fabs(dx) > 0.5 || std::fabs(dy) > 0.5)) {
+        app->middle_dragged = true;
+    }
+
+    if (app->right_down && (std::fabs(dx) > 0.5 || std::fabs(dy) > 0.5)) {
+        app->right_dragged = true;
+    }
+
     if (app->middle_down) {
         app->renderer.camera.pan(static_cast<float>(dx), static_cast<float>(dy));
-    } else if (app->left_down && !app->left_captured_by_ui) {
+    } else if (app->right_down) {
         app->renderer.camera.orbit(static_cast<float>(dx) * 0.3f,
                                    static_cast<float>(-dy) * 0.3f);
+    }
+
+    if (app->tool_mode == ToolMode::Sketch) {
+        if (point_hits_ui(*app)) {
+            app->renderer.clear_hovered();
+        } else {
+            app->renderer.update_sketch_cursor(xpos, ypos);
+        }
+    } else {
+        if (point_hits_ui(*app) || app->left_down || app->middle_down || app->right_down) {
+            app->renderer.clear_hovered();
+        } else {
+            app->renderer.update_hovered(xpos, ypos);
+        }
     }
 
     app->last_drag_x = xpos;
@@ -545,15 +716,75 @@ void mouse_button_callback(GLFWwindow *window, int button, int action, int /*mod
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_PRESS) {
             app->left_down = true;
+            app->left_dragged = false;
+            app->left_press_x = app->mouse_x;
+            app->left_press_y = app->mouse_y;
             app->left_captured_by_ui = handle_left_press(*app);
         } else if (action == GLFW_RELEASE) {
+            if (!app->left_captured_by_ui && !point_hits_ui(*app)) {
+                if (app->tool_mode == ToolMode::Sketch) {
+                    if (app->renderer.handle_sketch_click(app->mouse_x, app->mouse_y)) {
+                        set_status(*app, sketch_status_label(*app));
+                    }
+                } else {
+                    apply_viewport_selection_click(*app);
+                }
+            }
             app->left_down = false;
             app->left_captured_by_ui = false;
+            app->left_dragged = false;
         }
     }
 
     if (button == GLFW_MOUSE_BUTTON_MIDDLE) {
-        app->middle_down = (action == GLFW_PRESS);
+        if (action == GLFW_PRESS) {
+            app->middle_down = true;
+            app->middle_dragged = false;
+            app->middle_captured_by_ui = point_hits_ui(*app);
+        } else if (action == GLFW_RELEASE) {
+            if (!app->middle_captured_by_ui && !app->middle_dragged && !point_hits_ui(*app)) {
+                const double now = glfwGetTime();
+                const double click_dx = app->mouse_x - app->last_middle_click_x;
+                const double click_dy = app->mouse_y - app->last_middle_click_y;
+                const double click_dist = std::sqrt((click_dx * click_dx) + (click_dy * click_dy));
+                const bool is_double_click =
+                    app->last_middle_click_time >= 0.0 &&
+                    (now - app->last_middle_click_time) <= kDoubleClickTimeSeconds &&
+                    click_dist <= kDoubleClickDistancePx;
+
+                if (is_double_click) {
+                    if (app->renderer.set_pivot_from_click(app->mouse_x, app->mouse_y)) {
+                        set_status(*app, "ROTATION PIVOT SET");
+                    } else {
+                        set_status(*app, "NO VALID PIVOT TARGET");
+                    }
+                    app->last_middle_click_time = -1.0;
+                } else {
+                    app->last_middle_click_time = now;
+                    app->last_middle_click_x = app->mouse_x;
+                    app->last_middle_click_y = app->mouse_y;
+                }
+            }
+
+            app->middle_down = false;
+            app->middle_captured_by_ui = false;
+            app->middle_dragged = false;
+        }
+    }
+
+    if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+        if (action == GLFW_PRESS) {
+            app->right_down = !point_hits_ui(*app);
+            app->right_dragged = false;
+        } else if (action == GLFW_RELEASE) {
+            if (app->tool_mode == ToolMode::Sketch && app->renderer.sketch_has_preview() &&
+                !point_hits_ui(*app) && !app->right_dragged) {
+                app->renderer.cancel_sketch_preview();
+                set_status(*app, "SKETCH PREVIEW CANCELED");
+            }
+            app->right_down = false;
+            app->right_dragged = false;
+        }
     }
 }
 
@@ -565,6 +796,9 @@ void scroll_callback(GLFWwindow *window, double /*xoffset*/, double yoffset)
     }
 
     app->renderer.camera.zoom(static_cast<float>(yoffset) * 0.5f);
+    if (app->tool_mode == ToolMode::Sketch) {
+        app->renderer.update_sketch_cursor(app->mouse_x, app->mouse_y);
+    }
 }
 
 void key_callback(GLFWwindow *window, int key, int /*scancode*/, int action, int /*mods*/)
@@ -577,6 +811,27 @@ void key_callback(GLFWwindow *window, int key, int /*scancode*/, int action, int
     if (key == GLFW_KEY_ESCAPE && app->open_menu >= 0) {
         app->open_menu = -1;
         set_status(*app, "MENU CLOSED");
+        return;
+    }
+
+    if (key == GLFW_KEY_ESCAPE && app->tool_mode == ToolMode::Sketch) {
+        if (app->renderer.sketch_has_preview()) {
+            app->renderer.cancel_sketch_preview();
+            set_status(*app, "SKETCH PREVIEW CANCELED");
+        } else {
+            exit_sketch_mode(*app);
+        }
+        return;
+    }
+
+    if (app->tool_mode == ToolMode::Sketch) {
+        if (key == GLFW_KEY_L) {
+            set_sketch_tool(*app, Renderer::SketchTool::Line);
+        } else if (key == GLFW_KEY_R) {
+            set_sketch_tool(*app, Renderer::SketchTool::Rectangle);
+        } else if (key == GLFW_KEY_C) {
+            set_sketch_tool(*app, Renderer::SketchTool::Circle);
+        }
     }
 }
 

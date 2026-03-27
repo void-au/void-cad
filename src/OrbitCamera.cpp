@@ -60,6 +60,11 @@ void OrbitCamera::zoom(float delta)
     m_distance = std::clamp(m_distance - delta, 0.5f, 500.0f);
 }
 
+void OrbitCamera::set_target(const glm::vec3 &target)
+{
+    m_target = target;
+}
+
 void OrbitCamera::reset()
 {
     m_target = m_default_target;

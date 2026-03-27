@@ -22,6 +22,7 @@ public:
     void orbit(float delta_azimuth, float delta_elevation);
     void pan(float delta_x, float delta_y);   // in view-plane units
     void zoom(float delta);                    // positive = closer
+    void set_target(const glm::vec3 &target);
     void reset();
 
     // Accessors

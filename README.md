@@ -13,9 +13,23 @@ Void-CAD is a lightweight, cross-platform CAD modelling tool written in modern C
 ## Milestones
 
 - [x] 3D Viewer — orbit, pan, and zoom via mouse
-- [x] Toolbar
-- [] Face / edge selection
-- [] Sketch mode
+- [x] Toolbar — custom top toolbar and viewport controls
+- [x] Face / edge selection — hover, select, and pivot targeting
+- [x] Sketch mode foundations — sketch plane, grid, line / rectangle / circle tools
+- [x] Basic sketch constraints — horizontal / vertical locking and radius-aware circle workflow
+- [ ] Persistent sketch editing — selection/editing of existing sketch entities
+- [ ] Profile detection — identify closed sketch regions for solid features
+- [ ] Extrude — turn closed sketch profiles into 3D solids
+- [ ] Cut / subtract extrude — remove material from existing bodies
+- [ ] Radius / fillet — round selected edges
+- [ ] Chamfer — bevel selected edges
+- [ ] Model tree / feature tree — hierarchical view of bodies, sketches, and operations
+- [ ] Parametric history editing — update earlier features and regenerate downstream geometry
+- [ ] Dimensions and advanced constraints — equal, coincident, concentric, tangent, numeric dimensions
+- [ ] Multi-body workflow — support separate parts/bodies in a scene
+- [ ] Boolean operations — union, difference, and intersection
+- [ ] Save / load projects — persist scene, sketches, and feature history
+- [ ] Import / export — STEP / STL / OBJ or similar interchange formats
 
 
 ## Building
