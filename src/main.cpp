@@ -16,7 +16,7 @@
 
 namespace {
 
-constexpr float kTextScale = 2.0f;
+constexpr float kTextScale = 1.0f;
 constexpr float kOuterMargin = 8.0f;
 constexpr float kButtonHeight = 30.0f;
 constexpr float kButtonPaddingX = 10.0f;
@@ -34,7 +34,7 @@ enum class ToolMode {
 
 struct UiLayout {
     std::array<UiRect, 4> menu_buttons{};
-    std::array<UiRect, 4> toolbar_buttons{};
+    std::array<UiRect, 5> toolbar_buttons{};
     UiRect open_menu_panel{};
     std::vector<UiRect> open_menu_items;
 };
@@ -79,7 +79,7 @@ static const std::vector<std::string> kEditItems = {
     "UNDO", "REDO", "PREFERENCES"
 };
 static const std::vector<std::string> kViewItems = {
-    "RESET CAMERA", "WIREFRAME"
+    "RESET CAMERA", "WIREFRAME", "ISO/PERSP"
 };
 static const std::vector<std::string> kHelpItems = {
     "ABOUT"
@@ -89,8 +89,8 @@ static const std::array<const std::vector<std::string> *, 4> kMenuItems = {
     &kFileItems, &kEditItems, &kViewItems, &kHelpItems
 };
 
-static const std::array<const char *, 4> kToolbarLabels = {
-    "RESET CAMERA", "WIREFRAME", "SELECT", "SKETCH"
+static const std::array<const char *, 5> kToolbarLabels = {
+    "RESET CAMERA", "WIREFRAME", "ISO/PERSP", "SELECT", "SKETCH"
 };
 
 UiColor rgba(float r, float g, float b, float a)
@@ -98,9 +98,9 @@ UiColor rgba(float r, float g, float b, float a)
     return {r, g, b, a};
 }
 
-float button_width(std::string_view label)
+float button_width(const UiRenderer &ui, std::string_view label)
 {
-    return UiRenderer::measure_text(label, kTextScale) + (kButtonPaddingX * 2.0f);
+    return ui.measure_text(label, kTextScale) + (kButtonPaddingX * 2.0f);
 }
 
 UiLayout build_ui_layout(const AppState &app)
@@ -110,20 +110,20 @@ UiLayout build_ui_layout(const AppState &app)
     float menu_x = kOuterMargin;
     const float top_y = kOuterMargin;
     for (std::size_t i = 0; i < kMenuTitles.size(); ++i) {
-        const float width = button_width(kMenuTitles[i]);
+        const float width = button_width(app.ui, kMenuTitles[i]);
         layout.menu_buttons[i] = {menu_x, top_y, width, kButtonHeight};
         menu_x += width + kMenuGap;
     }
 
     float toolbar_width = 0.0f;
     for (const char *label : kToolbarLabels) {
-        toolbar_width += button_width(label);
+        toolbar_width += button_width(app.ui, label);
     }
     toolbar_width += kButtonGap * static_cast<float>(kToolbarLabels.size() - 1);
 
     float toolbar_x = static_cast<float>(app.window_width) - kOuterMargin - toolbar_width;
     for (std::size_t i = 0; i < kToolbarLabels.size(); ++i) {
-        const float width = button_width(kToolbarLabels[i]);
+        const float width = button_width(app.ui, kToolbarLabels[i]);
         layout.toolbar_buttons[i] = {toolbar_x, top_y, width, kButtonHeight};
         toolbar_x += width + kButtonGap;
     }
@@ -132,7 +132,7 @@ UiLayout build_ui_layout(const AppState &app)
         const auto &items = *kMenuItems[static_cast<std::size_t>(app.open_menu)];
         float panel_width = 180.0f;
         for (const std::string &item : items) {
-            panel_width = std::max(panel_width, button_width(item));
+            panel_width = std::max(panel_width, button_width(app.ui, item));
         }
         panel_width += kMenuPanelPadding * 2.0f;
 
@@ -221,6 +221,17 @@ void reset_camera(AppState &app)
     set_status(app, "CAMERA RESET");
 }
 
+void toggle_projection_mode(AppState &app)
+{
+    if (app.renderer.is_isometric()) {
+        app.renderer.set_projection_mode(Renderer::ProjectionMode::Perspective);
+        set_status(app, "PERSPECTIVE CAMERA");
+    } else {
+        app.renderer.set_projection_mode(Renderer::ProjectionMode::Isometric);
+        set_status(app, "ISOMETRIC CAMERA");
+    }
+}
+
 void handle_toolbar_action(AppState &app, int button_index)
 {
     app.open_menu = -1;
@@ -233,9 +244,12 @@ void handle_toolbar_action(AppState &app, int button_index)
         toggle_wireframe(app);
         break;
     case 2:
-        toggle_tool_mode(app, ToolMode::Select);
+        toggle_projection_mode(app);
         break;
     case 3:
+        toggle_tool_mode(app, ToolMode::Select);
+        break;
+    case 4:
         toggle_tool_mode(app, ToolMode::Sketch);
         break;
     default:
@@ -270,6 +284,7 @@ void handle_menu_action(AppState &app, int menu_index, int item_index)
         switch (item_index) {
         case 0: reset_camera(app); break;
         case 1: toggle_wireframe(app); break;
+        case 2: toggle_projection_mode(app); break;
         default: break;
         }
         break;
@@ -325,27 +340,29 @@ void draw_button(UiRenderer &ui,
                  bool hovered,
                  bool active)
 {
-    UiColor fill = rgba(0.08f, 0.08f, 0.09f, 0.32f);
-    UiColor outline = rgba(1.0f, 1.0f, 1.0f, 0.10f);
+    UiColor fill = rgba(0.0f, 0.0f, 0.0f, 0.35f);
+    UiColor outline = rgba(1.0f, 1.0f, 1.0f, 0.20f);
+    UiColor text_color = rgba(1.0f, 1.0f, 1.0f, 1.0f);
 
     if (active) {
-        fill = rgba(0.36f, 0.48f, 0.78f, 0.78f);
-        outline = rgba(0.82f, 0.88f, 1.0f, 0.32f);
+        fill = rgba(1.0f, 1.0f, 1.0f, 0.92f);
+        outline = rgba(1.0f, 1.0f, 1.0f, 1.0f);
+        text_color = rgba(0.0f, 0.0f, 0.0f, 1.0f);
     } else if (hovered) {
-        fill = rgba(0.18f, 0.18f, 0.20f, 0.72f);
-        outline = rgba(1.0f, 1.0f, 1.0f, 0.16f);
+        fill = rgba(0.0f, 0.0f, 0.0f, 0.75f);
+        outline = rgba(1.0f, 1.0f, 1.0f, 0.45f);
     }
 
     ui.filled_rect(rect, fill);
     ui.outline_rect(rect, 1.0f, outline);
 
-    const float text_width = UiRenderer::measure_text(label, kTextScale);
-    const float text_height = UiRenderer::line_height(kTextScale);
+        const float text_width = ui.measure_text(label, kTextScale);
+        const float text_height = ui.line_height(kTextScale);
     ui.text(rect.x + (rect.w - text_width) * 0.5f,
             rect.y + (rect.h - text_height) * 0.5f,
             label,
             kTextScale,
-            rgba(0.95f, 0.96f, 0.98f, 1.0f));
+            text_color);
 }
 
 void draw_menu_item(UiRenderer &ui,
@@ -354,40 +371,40 @@ void draw_menu_item(UiRenderer &ui,
                     bool hovered)
 {
     const UiColor fill = hovered
-        ? rgba(0.21f, 0.21f, 0.24f, 0.96f)
-        : rgba(0.08f, 0.08f, 0.09f, 0.0f);
+        ? rgba(1.0f, 1.0f, 1.0f, 0.18f)
+        : rgba(0.0f, 0.0f, 0.0f, 0.0f);
 
     ui.filled_rect(rect, fill);
 
-    const float text_height = UiRenderer::line_height(kTextScale);
+    const float text_height = ui.line_height(kTextScale);
     ui.text(rect.x + 10.0f,
             rect.y + (rect.h - text_height) * 0.5f,
             label,
             kTextScale,
-            rgba(0.95f, 0.96f, 0.98f, 1.0f));
+            rgba(1.0f, 1.0f, 1.0f, 1.0f));
 }
 
-UiRect badge_rect(float x, float y, std::string_view label)
+UiRect badge_rect(const UiRenderer &ui, float x, float y, std::string_view label)
 {
     return {
         x,
         y,
-        UiRenderer::measure_text(label, kTextScale) + (kBadgePaddingX * 2.0f),
+        ui.measure_text(label, kTextScale) + (kBadgePaddingX * 2.0f),
         kBadgeHeight,
     };
 }
 
 void draw_badge(UiRenderer &ui, const UiRect &rect, std::string_view label)
 {
-    ui.filled_rect(rect, rgba(0.02f, 0.02f, 0.03f, 0.60f));
-    ui.outline_rect(rect, 1.0f, rgba(1.0f, 1.0f, 1.0f, 0.10f));
+    ui.filled_rect(rect, rgba(0.0f, 0.0f, 0.0f, 0.65f));
+    ui.outline_rect(rect, 1.0f, rgba(1.0f, 1.0f, 1.0f, 0.25f));
 
-    const float text_height = UiRenderer::line_height(kTextScale);
+    const float text_height = ui.line_height(kTextScale);
     ui.text(rect.x + kBadgePaddingX,
             rect.y + (rect.h - text_height) * 0.5f,
             label,
             kTextScale,
-            rgba(0.92f, 0.95f, 0.98f, 1.0f));
+            rgba(1.0f, 1.0f, 1.0f, 1.0f));
 }
 
 std::string fps_label(const AppState &app)
@@ -424,16 +441,21 @@ void render_ui(AppState &app)
                 layout.toolbar_buttons[2],
                 kToolbarLabels[2],
                 layout.toolbar_buttons[2].contains(app.mouse_x, app.mouse_y),
-                app.tool_mode == ToolMode::Select);
+                app.renderer.is_isometric());
     draw_button(app.ui,
                 layout.toolbar_buttons[3],
                 kToolbarLabels[3],
                 layout.toolbar_buttons[3].contains(app.mouse_x, app.mouse_y),
+                app.tool_mode == ToolMode::Select);
+    draw_button(app.ui,
+                layout.toolbar_buttons[4],
+                kToolbarLabels[4],
+                layout.toolbar_buttons[4].contains(app.mouse_x, app.mouse_y),
                 app.tool_mode == ToolMode::Sketch);
 
     if (app.open_menu >= 0) {
-        app.ui.filled_rect(layout.open_menu_panel, rgba(0.04f, 0.04f, 0.05f, 0.96f));
-        app.ui.outline_rect(layout.open_menu_panel, 1.0f, rgba(1.0f, 1.0f, 1.0f, 0.12f));
+        app.ui.filled_rect(layout.open_menu_panel, rgba(0.0f, 0.0f, 0.0f, 0.92f));
+        app.ui.outline_rect(layout.open_menu_panel, 1.0f, rgba(1.0f, 1.0f, 1.0f, 0.35f));
 
         const auto &items = *kMenuItems[static_cast<std::size_t>(app.open_menu)];
         for (std::size_t i = 0; i < items.size(); ++i) {
@@ -444,12 +466,14 @@ void render_ui(AppState &app)
         }
     }
 
-    const UiRect status = badge_rect(kOuterMargin,
+    const UiRect status = badge_rect(app.ui,
+                                     kOuterMargin,
                                      static_cast<float>(app.window_height) - kOuterMargin - kBadgeHeight,
                                      app.status);
     const std::string fps = fps_label(app);
-    const float fps_width = badge_rect(0.0f, 0.0f, fps).w;
-    const UiRect fps_badge = badge_rect(static_cast<float>(app.window_width) - kOuterMargin - fps_width,
+    const float fps_width = badge_rect(app.ui, 0.0f, 0.0f, fps).w;
+    const UiRect fps_badge = badge_rect(app.ui,
+                                        static_cast<float>(app.window_width) - kOuterMargin - fps_width,
                                         static_cast<float>(app.window_height) - kOuterMargin - kBadgeHeight,
                                         fps);
 

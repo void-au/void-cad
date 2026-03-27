@@ -1,6 +1,5 @@
 #include "UiRenderer.h"
 
-#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdio>
@@ -8,13 +7,16 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
 namespace {
 
-constexpr int GLYPH_WIDTH = 5;
-constexpr int GLYPH_HEIGHT = 7;
-constexpr int GLYPH_ADVANCE = 6;
+constexpr int FALLBACK_GLYPH_WIDTH = 5;
+constexpr int FALLBACK_GLYPH_HEIGHT = 7;
+constexpr int FALLBACK_GLYPH_ADVANCE = 6;
 
-std::array<unsigned char, GLYPH_HEIGHT> glyph_rows(char c)
+std::array<unsigned char, FALLBACK_GLYPH_HEIGHT> glyph_rows(char c)
 {
     switch (static_cast<unsigned char>(std::toupper(static_cast<unsigned char>(c)))) {
     case 'A': return {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
@@ -57,7 +59,7 @@ std::array<unsigned char, GLYPH_HEIGHT> glyph_rows(char c)
     case '-': return {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00};
     case '/': return {0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10};
     case ' ': return {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    default:  return {0x1F, 0x01, 0x02, 0x04, 0x08, 0x00, 0x08};
+    default: return {0x1F, 0x01, 0x02, 0x04, 0x08, 0x00, 0x08};
     }
 }
 
@@ -106,6 +108,63 @@ GLuint UiRenderer::link_program(GLuint vertex_shader, GLuint fragment_shader)
     return program;
 }
 
+bool UiRenderer::load_ubuntu_mono()
+{
+    static const std::array<const char *, 5> candidates = {
+        "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+        "/usr/share/fonts/truetype/ubuntu-font-family/UbuntuMono-R.ttf",
+        "/usr/share/fonts/TTF/UbuntuMono-R.ttf",
+        "/usr/share/fonts/ubuntu/UbuntuMono-R.ttf",
+        "/usr/local/share/fonts/UbuntuMono-R.ttf"
+    };
+
+    FT_Library library = nullptr;
+    if (FT_Init_FreeType(&library) != 0) {
+        return false;
+    }
+
+    FT_Face face = nullptr;
+    for (const char *path : candidates) {
+        if (FT_New_Face(library, path, 0, &face) == 0) {
+            break;
+        }
+    }
+
+    if (face == nullptr) {
+        FT_Done_FreeType(library);
+        return false;
+    }
+
+    FT_Set_Pixel_Sizes(face, 0, 16);
+
+    m_glyphs.clear();
+    for (unsigned char c = 32; c < 127; ++c) {
+        if (FT_Load_Char(face, c, FT_LOAD_RENDER) != 0) {
+            continue;
+        }
+
+        const FT_GlyphSlot glyph = face->glyph;
+        GlyphBitmap cache;
+        cache.width = static_cast<int>(glyph->bitmap.width);
+        cache.height = static_cast<int>(glyph->bitmap.rows);
+        cache.bearing_x = glyph->bitmap_left;
+        cache.bearing_y = glyph->bitmap_top;
+        cache.advance_px = static_cast<float>(glyph->advance.x) / 64.0f;
+        cache.alpha.assign(glyph->bitmap.buffer,
+                           glyph->bitmap.buffer + (cache.width * cache.height));
+        m_glyphs.emplace(c, std::move(cache));
+    }
+
+    m_font_ascent = static_cast<float>(face->size->metrics.ascender) / 64.0f;
+    m_font_line_height = static_cast<float>(face->size->metrics.height) / 64.0f;
+    m_fallback_advance = static_cast<float>(face->size->metrics.max_advance) / 64.0f;
+
+    FT_Done_Face(face);
+    FT_Done_FreeType(library);
+
+    return !m_glyphs.empty();
+}
+
 void UiRenderer::init()
 {
     static const char *VERT_SRC = R"glsl(#version 330 core
@@ -144,6 +203,11 @@ void main()
     glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void *>(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
+
+    m_has_ubuntu_mono = load_ubuntu_mono();
+    if (!m_has_ubuntu_mono) {
+        std::fprintf(stderr, "Warning: Ubuntu Mono not found, using fallback bitmap font.\n");
+    }
 }
 
 void UiRenderer::begin_frame(int width, int height)
@@ -178,27 +242,44 @@ void UiRenderer::outline_rect(const UiRect &rect, float thickness, UiColor color
     filled_rect({rect.x + rect.w - thickness, rect.y + thickness, thickness, rect.h - (2.0f * thickness)}, color);
 }
 
-float UiRenderer::measure_text(std::string_view text, float scale)
+float UiRenderer::measure_text(std::string_view text, float scale) const
 {
     if (text.empty()) {
         return 0.0f;
     }
-    return static_cast<float>((GLYPH_ADVANCE * static_cast<int>(text.size())) - 1) * scale;
+
+    if (!m_has_ubuntu_mono || m_glyphs.empty()) {
+        return static_cast<float>((FALLBACK_GLYPH_ADVANCE * static_cast<int>(text.size())) - 1) * scale;
+    }
+
+    float width = 0.0f;
+    for (char c : text) {
+        const auto it = m_glyphs.find(static_cast<unsigned char>(c));
+        if (it != m_glyphs.end()) {
+            width += it->second.advance_px;
+        } else {
+            width += m_fallback_advance;
+        }
+    }
+    return width * scale;
 }
 
-float UiRenderer::line_height(float scale)
+float UiRenderer::line_height(float scale) const
 {
-    return static_cast<float>(GLYPH_HEIGHT + 1) * scale;
+    if (!m_has_ubuntu_mono) {
+        return static_cast<float>(FALLBACK_GLYPH_HEIGHT + 1) * scale;
+    }
+    return m_font_line_height * scale;
 }
 
-void UiRenderer::text(float x, float y, std::string_view text, float scale, UiColor color)
+void UiRenderer::draw_fallback_text(float x, float y, std::string_view text, float scale, UiColor color)
 {
     float cursor_x = x;
     for (char c : text) {
         const auto rows = glyph_rows(c);
-        for (int row = 0; row < GLYPH_HEIGHT; ++row) {
-            for (int col = 0; col < GLYPH_WIDTH; ++col) {
-                const unsigned char bit = static_cast<unsigned char>(1u << (GLYPH_WIDTH - 1 - col));
+        for (int row = 0; row < FALLBACK_GLYPH_HEIGHT; ++row) {
+            for (int col = 0; col < FALLBACK_GLYPH_WIDTH; ++col) {
+                const unsigned char bit = static_cast<unsigned char>(1u << (FALLBACK_GLYPH_WIDTH - 1 - col));
                 if ((rows[row] & bit) == 0) {
                     continue;
                 }
@@ -210,7 +291,50 @@ void UiRenderer::text(float x, float y, std::string_view text, float scale, UiCo
                 }, color);
             }
         }
-        cursor_x += static_cast<float>(GLYPH_ADVANCE) * scale;
+        cursor_x += static_cast<float>(FALLBACK_GLYPH_ADVANCE) * scale;
+    }
+}
+
+void UiRenderer::text(float x, float y, std::string_view text, float scale, UiColor color)
+{
+    if (!m_has_ubuntu_mono || m_glyphs.empty()) {
+        draw_fallback_text(x, y, text, scale, color);
+        return;
+    }
+
+    const float baseline = y + (m_font_ascent * scale);
+    float cursor_x = x;
+
+    for (char c : text) {
+        const auto it = m_glyphs.find(static_cast<unsigned char>(c));
+        if (it == m_glyphs.end()) {
+            cursor_x += m_fallback_advance * scale;
+            continue;
+        }
+
+        const GlyphBitmap &glyph = it->second;
+        const float glyph_x = cursor_x + (static_cast<float>(glyph.bearing_x) * scale);
+        const float glyph_y = baseline - (static_cast<float>(glyph.bearing_y) * scale);
+
+        for (int row = 0; row < glyph.height; ++row) {
+            for (int col = 0; col < glyph.width; ++col) {
+                const unsigned char alpha = glyph.alpha[static_cast<std::size_t>(row * glyph.width + col)];
+                if (alpha <= 8) {
+                    continue;
+                }
+
+                UiColor pixel_color = color;
+                pixel_color.a *= static_cast<float>(alpha) / 255.0f;
+                filled_rect({
+                    glyph_x + (static_cast<float>(col) * scale),
+                    glyph_y + (static_cast<float>(row) * scale),
+                    scale,
+                    scale,
+                }, pixel_color);
+            }
+        }
+
+        cursor_x += glyph.advance_px * scale;
     }
 }
 

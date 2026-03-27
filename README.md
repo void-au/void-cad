@@ -13,20 +13,22 @@ Void-CAD is a lightweight, cross-platform CAD modelling tool written in modern C
 ## Milestones
 
 - [x] 3D Viewer — orbit, pan, and zoom via mouse
-- [ ] Toolbar
-- [ ] Face / edge selection
-- [ ] Sketch mode
+- [x] Toolbar
+- [] Face / edge selection
+- [] Sketch mode
 
 
 ## Building
 
 ### Prerequisites
 
-Run the dependency helper to install required system libraries (GLFW, Epoxy, GLM, OpenGL):
+Run the dependency helper to install required system libraries (GLFW, Epoxy, FreeType, GLM, OpenGL):
 
 ```bash
 ./deps.sh
 ```
+
+The custom UI renders text with **Ubuntu Mono** when available (`UbuntuMono-R.ttf`); it falls back to an internal bitmap font if the TTF is missing.
 
 ### Compile
 

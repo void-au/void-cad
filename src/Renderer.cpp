@@ -48,58 +48,58 @@ static std::string glsl_version_header()
 // ---------------------------------------------------------------------------
 
 // XYZ axis gizmo — 3 lines (6 vertices)
-// X = red, Y = green, Z = blue
 static const float AXIS_VERTS[] = {
     // X axis
-    0.0f, 0.0f, 0.0f,   1.0f, 0.2f, 0.2f,
-    1.0f, 0.0f, 0.0f,   1.0f, 0.2f, 0.2f,
+    0.0f, 0.0f, 0.0f,   1.0f, 1.0f, 1.0f,
+    1.0f, 0.0f, 0.0f,   1.0f, 1.0f, 1.0f,
     // Y axis
-    0.0f, 0.0f, 0.0f,   0.2f, 1.0f, 0.2f,
-    0.0f, 1.0f, 0.0f,   0.2f, 1.0f, 0.2f,
-    // Z axis (cyan-blue for visibility on dark bg)
-    0.0f, 0.0f, 0.0f,   0.2f, 0.6f, 1.0f,
-    0.0f, 0.0f, 1.0f,   0.2f, 0.6f, 1.0f,
+    0.0f, 0.0f, 0.0f,   0.85f, 0.85f, 0.85f,
+    0.0f, 1.0f, 0.0f,   0.85f, 0.85f, 0.85f,
+    // Z axis
+    0.0f, 0.0f, 0.0f,   0.70f, 0.70f, 0.70f,
+    0.0f, 0.0f, 1.0f,   0.70f, 0.70f, 0.70f,
 };
 
 // Unit wireframe cube centred at origin — 12 edges (24 vertices for GL_LINES)
-static const float g = 0.70f;  // grey value
+static const float edge = 1.0f;
+static const float face = 0.13333334f; // #222222
 static const float CUBE_VERTS[] = {
     // bottom face
-    -0.5f,-0.5f,-0.5f, g,g,g,    0.5f,-0.5f,-0.5f, g,g,g,
-     0.5f,-0.5f,-0.5f, g,g,g,    0.5f, 0.5f,-0.5f, g,g,g,
-     0.5f, 0.5f,-0.5f, g,g,g,   -0.5f, 0.5f,-0.5f, g,g,g,
-    -0.5f, 0.5f,-0.5f, g,g,g,   -0.5f,-0.5f,-0.5f, g,g,g,
+    -0.5f,-0.5f,-0.5f, edge,edge,edge,    0.5f,-0.5f,-0.5f, edge,edge,edge,
+     0.5f,-0.5f,-0.5f, edge,edge,edge,    0.5f, 0.5f,-0.5f, edge,edge,edge,
+     0.5f, 0.5f,-0.5f, edge,edge,edge,   -0.5f, 0.5f,-0.5f, edge,edge,edge,
+    -0.5f, 0.5f,-0.5f, edge,edge,edge,   -0.5f,-0.5f,-0.5f, edge,edge,edge,
     // top face
-    -0.5f,-0.5f, 0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,
-     0.5f,-0.5f, 0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,
-     0.5f, 0.5f, 0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,
-    -0.5f, 0.5f, 0.5f, g,g,g,   -0.5f,-0.5f, 0.5f, g,g,g,
+    -0.5f,-0.5f, 0.5f, edge,edge,edge,    0.5f,-0.5f, 0.5f, edge,edge,edge,
+     0.5f,-0.5f, 0.5f, edge,edge,edge,    0.5f, 0.5f, 0.5f, edge,edge,edge,
+     0.5f, 0.5f, 0.5f, edge,edge,edge,   -0.5f, 0.5f, 0.5f, edge,edge,edge,
+    -0.5f, 0.5f, 0.5f, edge,edge,edge,   -0.5f,-0.5f, 0.5f, edge,edge,edge,
     // vertical edges
-    -0.5f,-0.5f,-0.5f, g,g,g,   -0.5f,-0.5f, 0.5f, g,g,g,
-     0.5f,-0.5f,-0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,
-     0.5f, 0.5f,-0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,
-    -0.5f, 0.5f,-0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,
+    -0.5f,-0.5f,-0.5f, edge,edge,edge,   -0.5f,-0.5f, 0.5f, edge,edge,edge,
+     0.5f,-0.5f,-0.5f, edge,edge,edge,    0.5f,-0.5f, 0.5f, edge,edge,edge,
+     0.5f, 0.5f,-0.5f, edge,edge,edge,    0.5f, 0.5f, 0.5f, edge,edge,edge,
+    -0.5f, 0.5f,-0.5f, edge,edge,edge,   -0.5f, 0.5f, 0.5f, edge,edge,edge,
 };
 
 static const float SOLID_CUBE_VERTS[] = {
     // front
-    -0.5f,-0.5f, 0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,
-    -0.5f,-0.5f, 0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,
+    -0.5f,-0.5f, 0.5f, face,face,face,    0.5f,-0.5f, 0.5f, face,face,face,    0.5f, 0.5f, 0.5f, face,face,face,
+    -0.5f,-0.5f, 0.5f, face,face,face,    0.5f, 0.5f, 0.5f, face,face,face,   -0.5f, 0.5f, 0.5f, face,face,face,
     // back
-    -0.5f,-0.5f,-0.5f, g,g,g,   -0.5f, 0.5f,-0.5f, g,g,g,    0.5f, 0.5f,-0.5f, g,g,g,
-    -0.5f,-0.5f,-0.5f, g,g,g,    0.5f, 0.5f,-0.5f, g,g,g,    0.5f,-0.5f,-0.5f, g,g,g,
+    -0.5f,-0.5f,-0.5f, face,face,face,   -0.5f, 0.5f,-0.5f, face,face,face,    0.5f, 0.5f,-0.5f, face,face,face,
+    -0.5f,-0.5f,-0.5f, face,face,face,    0.5f, 0.5f,-0.5f, face,face,face,    0.5f,-0.5f,-0.5f, face,face,face,
     // left
-    -0.5f,-0.5f,-0.5f, g,g,g,   -0.5f,-0.5f, 0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,
-    -0.5f,-0.5f,-0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,   -0.5f, 0.5f,-0.5f, g,g,g,
+    -0.5f,-0.5f,-0.5f, face,face,face,   -0.5f,-0.5f, 0.5f, face,face,face,   -0.5f, 0.5f, 0.5f, face,face,face,
+    -0.5f,-0.5f,-0.5f, face,face,face,   -0.5f, 0.5f, 0.5f, face,face,face,   -0.5f, 0.5f,-0.5f, face,face,face,
     // right
-     0.5f,-0.5f,-0.5f, g,g,g,    0.5f, 0.5f,-0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,
-     0.5f,-0.5f,-0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,
+     0.5f,-0.5f,-0.5f, face,face,face,    0.5f, 0.5f,-0.5f, face,face,face,    0.5f, 0.5f, 0.5f, face,face,face,
+     0.5f,-0.5f,-0.5f, face,face,face,    0.5f, 0.5f, 0.5f, face,face,face,    0.5f,-0.5f, 0.5f, face,face,face,
     // top
-    -0.5f, 0.5f,-0.5f, g,g,g,   -0.5f, 0.5f, 0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,
-    -0.5f, 0.5f,-0.5f, g,g,g,    0.5f, 0.5f, 0.5f, g,g,g,    0.5f, 0.5f,-0.5f, g,g,g,
+    -0.5f, 0.5f,-0.5f, face,face,face,   -0.5f, 0.5f, 0.5f, face,face,face,    0.5f, 0.5f, 0.5f, face,face,face,
+    -0.5f, 0.5f,-0.5f, face,face,face,    0.5f, 0.5f, 0.5f, face,face,face,    0.5f, 0.5f,-0.5f, face,face,face,
     // bottom
-    -0.5f,-0.5f,-0.5f, g,g,g,    0.5f,-0.5f,-0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,
-    -0.5f,-0.5f,-0.5f, g,g,g,    0.5f,-0.5f, 0.5f, g,g,g,   -0.5f,-0.5f, 0.5f, g,g,g,
+    -0.5f,-0.5f,-0.5f, face,face,face,    0.5f,-0.5f,-0.5f, face,face,face,    0.5f,-0.5f, 0.5f, face,face,face,
+    -0.5f,-0.5f,-0.5f, face,face,face,    0.5f,-0.5f, 0.5f, face,face,face,   -0.5f,-0.5f, 0.5f, face,face,face,
 };
 
 // ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ void Renderer::init()
     upload_line_vao(m_solid_cube_vao, m_solid_cube_vbo,
                     SOLID_CUBE_VERTS, sizeof(SOLID_CUBE_VERTS));
 
-    glClearColor(0.15f, 0.15f, 0.15f, 1.0f);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glEnable(GL_DEPTH_TEST);
     glLineWidth(1.5f);
 }
@@ -204,7 +204,16 @@ void Renderer::draw()
     glm::mat4 model = glm::mat4(1.0f);
     glm::mat4 view  = camera.view_matrix();
     float aspect    = (m_height > 0) ? static_cast<float>(m_width) / m_height : 1.0f;
-    glm::mat4 proj  = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+    glm::mat4 proj  = glm::mat4(1.0f);
+    if (m_projection_mode == ProjectionMode::Perspective) {
+        proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+    } else {
+        const float ortho_height = std::max(0.5f, camera.distance() * 0.60f);
+        const float ortho_width = ortho_height * aspect;
+        proj = glm::ortho(-ortho_width, ortho_width,
+                          -ortho_height, ortho_height,
+                          0.1f, 100.0f);
+    }
     glm::mat4 mvp   = proj * view * model;
 
     glUseProgram(m_program);
@@ -214,8 +223,14 @@ void Renderer::draw()
         glBindVertexArray(m_cube_vao);
         glDrawArrays(GL_LINES, 0, 24);
     } else {
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(1.0f, 1.0f);
         glBindVertexArray(m_solid_cube_vao);
         glDrawArrays(GL_TRIANGLES, 0, 36);
+        glDisable(GL_POLYGON_OFFSET_FILL);
+
+        glBindVertexArray(m_cube_vao);
+        glDrawArrays(GL_LINES, 0, 24);
     }
 
     // Draw axis gizmo after the cube so it stays visible.

@@ -12,9 +12,11 @@ GLFW_CFLAGS=$(pkg-config --cflags glfw3)
 GLFW_LIBS=$(pkg-config --libs glfw3)
 EPOXY_CFLAGS=$(pkg-config --cflags epoxy)
 EPOXY_LIBS=$(pkg-config --libs epoxy)
+FREETYPE_CFLAGS=$(pkg-config --cflags freetype2)
+FREETYPE_LIBS=$(pkg-config --libs freetype2)
 
-CFLAGS_ALL="$CXXFLAGS $GLFW_CFLAGS $EPOXY_CFLAGS"
-LIBS_ALL="$GLFW_LIBS $EPOXY_LIBS"
+CFLAGS_ALL="$CXXFLAGS $GLFW_CFLAGS $EPOXY_CFLAGS $FREETYPE_CFLAGS"
+LIBS_ALL="$GLFW_LIBS $EPOXY_LIBS $FREETYPE_LIBS"
 
 # Collect all .cpp sources under src/
 SRCS=$(find src -name '*.cpp')

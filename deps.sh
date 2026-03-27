@@ -17,6 +17,7 @@ check() {
 echo "=== Checking dependencies ==="
 check "glfw3"
 check "epoxy"
+check "freetype2"
 
 # GLM is header-only; check the include path directly
 if [ -f /usr/include/glm/glm.hpp ] || [ -f /usr/local/include/glm/glm.hpp ]; then
@@ -42,6 +43,7 @@ if command -v apt-get &>/dev/null; then
         case "$pkg" in
             glfw3)      APT_PKGS+=("libglfw3-dev") ;;
             epoxy)      APT_PKGS+=("libepoxy-dev") ;;
+            freetype2)  APT_PKGS+=("libfreetype-dev") ;;
             libglm-dev) APT_PKGS+=("libglm-dev") ;;
         esac
     done
@@ -53,6 +55,7 @@ elif command -v pacman &>/dev/null; then
         case "$pkg" in
             glfw3)      PACMAN_PKGS+=("glfw") ;;
             epoxy)      PACMAN_PKGS+=("libepoxy") ;;
+            freetype2)  PACMAN_PKGS+=("freetype2") ;;
             libglm-dev) PACMAN_PKGS+=("glm") ;;
         esac
     done
@@ -63,6 +66,7 @@ elif command -v dnf &>/dev/null; then
         case "$pkg" in
             glfw3)      DNF_PKGS+=("glfw-devel") ;;
             epoxy)      DNF_PKGS+=("libepoxy-devel") ;;
+            freetype2)  DNF_PKGS+=("freetype-devel") ;;
             libglm-dev) DNF_PKGS+=("glm-devel") ;;
         esac
     done
