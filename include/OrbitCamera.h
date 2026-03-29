@@ -29,6 +29,14 @@ public:
     float     distance()  const { return m_distance; }
     glm::vec3 target()    const { return m_target; }
 
+    // Set full camera state (target, distance, angles)
+    void set_state(const glm::vec3 &target, float distance,
+                   float azimuth, float elevation);
+
+    // Set angles / distance independently
+    void set_angles(float azimuth, float elevation);
+    void set_distance(float distance);
+
 private:
     glm::vec3 m_target;
     float     m_distance;

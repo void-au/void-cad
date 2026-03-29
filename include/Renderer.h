@@ -64,6 +64,13 @@ public:
         float radius = 0.0f;
     };
 
+    struct ImportedBodyItem {
+        std::string label;
+        int face_count = 0;
+        int edge_count = 0;
+        bool visible = true;
+    };
+
     Renderer()  = default;
     ~Renderer();
 
@@ -104,6 +111,30 @@ public:
 
     const PrimitiveHit &hovered_hit() const { return m_hovered_hit; }
     const PrimitiveHit &selected_hit() const { return m_selected_hit; }
+
+    // Return a geometric center for the current selection (face centroid, edge midpoint,
+    // or fallback to the hit world position). Useful for camera focusing and centering.
+    glm::vec3 selection_center() const;
+
+    // Helpers for UI: project world/local sketch coords to screen space
+    bool world_to_screen(const glm::vec3 &world, glm::vec2 &out_screen) const;
+    bool sketch_preview_rectangle_local(SketchRectangle &out_rect) const;
+    bool sketch_local_to_screen(const glm::vec2 &local, glm::vec2 &out_screen) const;
+    // Adjust the in-progress rectangle preview dimensions (meters).
+    void set_sketch_preview_rectangle_dims(float width_m, float height_m);
+    bool commit_sketch_preview();
+    // Modify the sketch preview local coordinate (used while creating rectangles)
+    void set_sketch_preview_local(const glm::vec2 &local);
+    // Return the current sketch anchor local coordinate
+    glm::vec2 sketch_anchor_local() const;
+
+    // Import a STEP file (edge wireframe only for now) and fit it to view.
+    bool import_step_file(const std::string &path, std::string &error_message);
+    void clear_imported_model();
+    bool has_imported_model() const { return m_has_imported_model; }
+    const std::vector<ImportedBodyItem> &imported_bodies() const { return m_imported_bodies; }
+    bool set_imported_body_visible(std::size_t body_index, bool visible);
+    bool toggle_imported_body_visible(std::size_t body_index);
 
     // Exposed so input handlers can manipulate the camera directly.
     OrbitCamera camera;
@@ -167,12 +198,23 @@ private:
     bool m_sketch_snap_to_grid = true;
     float m_sketch_grid_spacing = 0.25f;
 
+    bool m_has_imported_model = false;
+    std::vector<ImportedBodyItem> m_imported_bodies;
+
+    struct ImportedBodyRenderData {
+        std::vector<float> line_verts;
+        std::vector<float> solid_verts;
+    };
+    std::vector<ImportedBodyRenderData> m_imported_body_render_data;
+
     glm::mat4 projection_matrix() const;
     PrimitiveHit pick_face(double mouse_x, double mouse_y) const;
     PrimitiveHit pick_edge(double mouse_x, double mouse_y) const;
     glm::vec2 project_to_screen(const glm::vec3 &world, float &ndc_z, bool &ok) const;
     bool pivot_marker_visible() const;
+    float effective_sketch_grid_spacing() const;
     void draw_overlay_lines(const std::vector<float> &verts, float line_width) const;
+    void draw_overlay_triangles(const std::vector<float> &verts) const;
     glm::vec3 sketch_world_from_local(const glm::vec2 &local) const;
     glm::vec2 sketch_local_from_world(const glm::vec3 &world) const;
     bool raycast_to_sketch_plane(double mouse_x, double mouse_y, glm::vec3 &world, glm::vec2 &local) const;

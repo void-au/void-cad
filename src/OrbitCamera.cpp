@@ -72,3 +72,23 @@ void OrbitCamera::reset()
     m_azimuth = m_default_azimuth;
     m_elevation = m_default_elevation;
 }
+
+void OrbitCamera::set_state(const glm::vec3 &target, float distance,
+                           float azimuth, float elevation)
+{
+    m_target = target;
+    m_distance = std::clamp(distance, 0.5f, 500.0f);
+    m_azimuth = azimuth;
+    m_elevation = std::clamp(elevation, -89.0f, 89.0f);
+}
+
+void OrbitCamera::set_angles(float azimuth, float elevation)
+{
+    m_azimuth = azimuth;
+    m_elevation = std::clamp(elevation, -89.0f, 89.0f);
+}
+
+void OrbitCamera::set_distance(float distance)
+{
+    m_distance = std::clamp(distance, 0.5f, 500.0f);
+}
