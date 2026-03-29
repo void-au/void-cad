@@ -11,6 +11,7 @@
 #include <fstream>
 #include <limits>
 #include <cmath>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -410,6 +411,43 @@ static std::vector<ParsedStepEntity> parse_step_entities(const std::string &raw)
     return entities;
 }
 
+static void log_step_header_metadata(const std::string &raw)
+{
+    const std::size_t header_start = raw.find("HEADER;");
+    if (header_start == std::string::npos) {
+        return;
+    }
+
+    const std::size_t data_start = raw.find("DATA;", header_start);
+    if (data_start == std::string::npos || data_start <= header_start) {
+        return;
+    }
+
+    const std::string header_block = raw.substr(header_start, data_start - header_start);
+
+    std::string statement;
+    statement.reserve(256);
+    for (char ch : header_block) {
+        statement.push_back(ch);
+        if (ch != ';') {
+            continue;
+        }
+
+        std::string trimmed = trim_copy(statement);
+        statement.clear();
+        if (trimmed.empty()) {
+            continue;
+        }
+
+        const std::string upper = uppercase_copy(trimmed);
+        if (upper.find("FILE_DESCRIPTION") != std::string::npos ||
+            upper.find("FILE_NAME") != std::string::npos ||
+            upper.find("FILE_SCHEMA") != std::string::npos) {
+            std::printf("[STEP][HEADER] %s\n", trimmed.c_str());
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -492,6 +530,41 @@ static void init_dynamic_line_vao(GLuint &vao, GLuint &vbo)
     glBindVertexArray(0);
 }
 
+static void upload_geometry_vao(GLuint &vao,
+                                GLuint &vbo,
+                                GLsizei &vertex_count,
+                                const std::vector<float> &verts,
+                                GLenum usage)
+{
+    if (verts.empty()) {
+        vao = 0;
+        vbo = 0;
+        vertex_count = 0;
+        return;
+    }
+
+    glGenVertexArrays(1, &vao);
+    glGenBuffers(1, &vbo);
+
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
+                 verts.data(),
+                 usage);
+
+    const GLsizei stride = 6 * sizeof(float);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
+                          reinterpret_cast<void*>(0));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
+                          reinterpret_cast<void*>(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    glBindVertexArray(0);
+    vertex_count = static_cast<GLsizei>(verts.size() / 6);
+}
+
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
@@ -555,14 +628,22 @@ void Renderer::draw()
             glPolygonOffset(1.0f, 1.0f);
             for (std::size_t i = 0; i < m_imported_body_render_data.size() && i < m_imported_bodies.size(); ++i) {
                 if (!m_imported_bodies[i].visible) continue;
-                draw_overlay_triangles(m_imported_body_render_data[i].solid_verts);
+                const auto &render_data = m_imported_body_render_data[i];
+                if (render_data.solid_vao == 0 || render_data.solid_vertex_count <= 0) continue;
+                glBindVertexArray(render_data.solid_vao);
+                glDrawArrays(GL_TRIANGLES, 0, render_data.solid_vertex_count);
             }
             glDisable(GL_POLYGON_OFFSET_FILL);
         }
         for (std::size_t i = 0; i < m_imported_body_render_data.size() && i < m_imported_bodies.size(); ++i) {
             if (!m_imported_bodies[i].visible) continue;
-            draw_overlay_lines(m_imported_body_render_data[i].line_verts, 1.5f);
+            const auto &render_data = m_imported_body_render_data[i];
+            if (render_data.line_vao == 0 || render_data.line_vertex_count <= 0) continue;
+            glLineWidth(1.5f);
+            glBindVertexArray(render_data.line_vao);
+            glDrawArrays(GL_LINES, 0, render_data.line_vertex_count);
         }
+        glBindVertexArray(0);
     } else if (m_wireframe) {
         glBindVertexArray(m_cube_vao);
         glDrawArrays(GL_LINES, 0, 24);
@@ -978,6 +1059,7 @@ static void tessellate_arc(
 bool Renderer::import_step_file(const std::string &path, std::string &error_message)
 {
     error_message.clear();
+    release_imported_gpu_buffers();
     m_imported_bodies.clear();
     m_imported_body_render_data.clear();
 
@@ -993,6 +1075,9 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
         return false;
     }
 
+    std::printf("[STEP] Loading: %s\n", path.c_str());
+    log_step_header_metadata(raw);
+
     const std::vector<ParsedStepEntity> entities = parse_step_entities(raw);
     if (entities.empty()) {
         error_message = "No STEP entities found.";
@@ -1004,6 +1089,67 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
     entity_map.reserve(entities.size() * 2);
     for (const auto &e : entities) {
         entity_map[e.id] = e.body;
+    }
+
+    auto extract_type_name = [](const std::string &body) -> std::string {
+        const std::size_t p = body.find('(');
+        if (p == std::string::npos) {
+            return "";
+        }
+        return uppercase_copy(trim_copy(body.substr(0, p)));
+    };
+
+    std::unordered_map<std::string, int> type_counts;
+    type_counts.reserve(64);
+    for (const auto &[id, body] : entity_map) {
+        (void)id;
+        const std::string type = extract_type_name(body);
+        if (!type.empty()) {
+            type_counts[type] += 1;
+        }
+    }
+
+    auto count_type = [&](const char *type_name) -> int {
+        const auto it = type_counts.find(type_name);
+        return it == type_counts.end() ? 0 : it->second;
+    };
+
+    auto body_has_keyword = [](const std::string &body, const char *keyword) -> bool {
+        return uppercase_copy(body).find(keyword) != std::string::npos;
+    };
+
+    auto count_keyword = [&](const char *keyword) -> int {
+        int count = 0;
+        for (const auto &[id, body] : entity_map) {
+            (void)id;
+            if (body_has_keyword(body, keyword)) {
+                count += 1;
+            }
+        }
+        return count;
+    };
+
+    std::printf("[STEP] Entity count: %zu\n", entities.size());
+    std::printf("[STEP] Types: CARTESIAN_POINT=%d, DIRECTION=%d, AXIS2_PLACEMENT_3D=%d, LOCAL_PLACEMENT=%d\n",
+                count_type("CARTESIAN_POINT"),
+                count_type("DIRECTION"),
+                count_type("AXIS2_PLACEMENT_3D"),
+                count_type("LOCAL_PLACEMENT"));
+    std::printf("[STEP] Types: MANIFOLD_SOLID_BREP=%d, BREP_WITH_VOIDS=%d, ADVANCED_FACE=%d, EDGE_CURVE=%d\n",
+                count_type("MANIFOLD_SOLID_BREP"),
+                count_type("BREP_WITH_VOIDS"),
+                count_type("ADVANCED_FACE"),
+                count_type("EDGE_CURVE"));
+    std::printf("[STEP] Types: SHAPE_REPRESENTATION=%d, SHAPE_REPRESENTATION_RELATIONSHIP=%d, REPRESENTATION_MAP=%d, MAPPED_ITEM=%d\n",
+                count_type("SHAPE_REPRESENTATION"),
+                count_type("SHAPE_REPRESENTATION_RELATIONSHIP"),
+                count_type("REPRESENTATION_MAP"),
+                count_type("MAPPED_ITEM"));
+    std::printf("[STEP] Types: ITEM_DEFINED_TRANSFORMATION=%d, SHAPE_REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION=%d\n",
+                count_keyword("ITEM_DEFINED_TRANSFORMATION"),
+                count_keyword("REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION"));
+    if (count_type("LOCAL_PLACEMENT") > 0 || count_type("MAPPED_ITEM") > 0) {
+        std::printf("[STEP][INFO] Placement/mapping entities detected. Assembly transforms are currently only partially handled and may affect body positions.\n");
     }
 
     auto get_type = [](const std::string &body) -> std::string {
@@ -1043,6 +1189,37 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
         return t > f;
     };
 
+    struct LocalPlacementRaw {
+        int parent_local_id = -1;
+        int relative_axis_id = -1;
+    };
+
+    struct TransformOperatorRaw {
+        int origin_id = -1;
+        int axis1_id = -1;
+        int axis2_id = -1;
+        float scale = 1.0f;
+    };
+
+    auto transform_point = [](const glm::mat4 &matrix, const glm::vec3 &point) -> glm::vec3 {
+        const glm::vec4 transformed = matrix * glm::vec4(point, 1.0f);
+        return glm::vec3(transformed.x, transformed.y, transformed.z);
+    };
+
+    auto extract_type = [&](int id) -> std::string {
+        const auto it = entity_map.find(id);
+        if (it == entity_map.end()) return "";
+        return get_type(it->second);
+    };
+
+    std::unordered_map<int, std::vector<int>> reverse_refs;
+    reverse_refs.reserve(entity_map.size() * 2);
+    for (const auto &[id, body] : entity_map) {
+        for (int ref_id : get_refs(body)) {
+            reverse_refs[ref_id].push_back(id);
+        }
+    }
+
     // ---------- pass 1: geometry primitives ----------
     std::unordered_map<int, glm::vec3> points;
     std::unordered_map<int, int>       vertex_to_point;
@@ -1050,6 +1227,13 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
 
     struct AxisPlacement { int origin_id = -1, z_id = -1, x_id = -1; };
     std::unordered_map<int, AxisPlacement> axis_placements;
+    std::unordered_map<int, LocalPlacementRaw> local_placements;
+    std::unordered_map<int, TransformOperatorRaw> transform_operators;
+    struct ItemDefinedTransformRaw {
+        int from_axis_id = -1;
+        int to_axis_id = -1;
+    };
+    std::unordered_map<int, ItemDefinedTransformRaw> item_defined_transforms;
 
     struct CircleRaw { int placement_id = -1; float radius = 0.0f; };
     std::unordered_map<int, CircleRaw> circle_raws;
@@ -1075,6 +1259,52 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
                     axis_placements[id] = {oid, zid, xid};
                 }
             }
+        } else if (type == "LOCAL_PLACEMENT") {
+            const auto args = split_step_args(body);
+            if (args.size() >= 3) {
+                int parent_id = -1;
+                int axis_id = -1;
+                if (!args[1].empty() && args[1][0] == '#') {
+                    parse_step_id_ref(args[1], parent_id);
+                }
+                if (parse_step_id_ref(args[2], axis_id)) {
+                    local_placements[id] = {parent_id, axis_id};
+                }
+            }
+        } else if (type == "CARTESIAN_TRANSFORMATION_OPERATOR_3D" ||
+                   type == "CARTESIAN_TRANSFORMATION_OPERATOR_3D_NON_UNIFORM") {
+            const auto args = split_step_args(body);
+            if (args.size() >= 4) {
+                int origin_id = -1;
+                int axis1_id = -1;
+                int axis2_id = -1;
+                float scale = 1.0f;
+                parse_step_id_ref(args[3], origin_id);
+                if (args.size() >= 2 && !args[1].empty() && args[1][0] == '#') {
+                    parse_step_id_ref(args[1], axis1_id);
+                }
+                if (args.size() >= 3 && !args[2].empty() && args[2][0] == '#') {
+                    parse_step_id_ref(args[2], axis2_id);
+                }
+                if (args.size() >= 5) {
+                    const std::string scale_token = trim_copy(args[4]);
+                    if (!scale_token.empty() && scale_token != "$" && scale_token != "*") {
+                        try {
+                            scale = std::stof(scale_token);
+                        } catch (...) {
+                            scale = 1.0f;
+                        }
+                    }
+                }
+                if (origin_id >= 0) {
+                    transform_operators[id] = {origin_id, axis1_id, axis2_id, scale};
+                }
+            }
+        } else if (type == "ITEM_DEFINED_TRANSFORMATION" || body_has_keyword(body, "ITEM_DEFINED_TRANSFORMATION")) {
+            const auto refs = get_refs(body);
+            if (refs.size() >= 2) {
+                item_defined_transforms[id] = {refs[0], refs[1]};
+            }
         } else if (type == "CIRCLE") {
             const auto args = split_step_args(body);
             if (args.size() >= 3) {
@@ -1099,6 +1329,255 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
         if (pit == points.end()) return false;
         out = pit->second;
         return true;
+    };
+
+    std::unordered_map<int, glm::mat4> axis_matrix_cache;
+    std::unordered_map<int, glm::mat4> local_matrix_cache;
+
+    auto make_axis_matrix = [&](int axis_id, glm::mat4 &out_matrix) -> bool {
+        const auto cache_it = axis_matrix_cache.find(axis_id);
+        if (cache_it != axis_matrix_cache.end()) {
+            out_matrix = cache_it->second;
+            return true;
+        }
+
+        const auto ap_it = axis_placements.find(axis_id);
+        if (ap_it == axis_placements.end()) {
+            return false;
+        }
+
+        const auto &ap = ap_it->second;
+        const auto origin_it = points.find(ap.origin_id);
+        const auto z_it = directions.find(ap.z_id);
+        if (origin_it == points.end() || z_it == directions.end()) {
+            return false;
+        }
+
+        glm::vec3 z_axis = z_it->second;
+        if (glm::length(z_axis) < 1e-8f) {
+            return false;
+        }
+        z_axis = glm::normalize(z_axis);
+
+        glm::vec3 x_axis(1.0f, 0.0f, 0.0f);
+        if (ap.x_id >= 0) {
+            const auto x_it = directions.find(ap.x_id);
+            if (x_it != directions.end()) {
+                const glm::vec3 candidate = x_it->second - z_axis * glm::dot(x_it->second, z_axis);
+                if (glm::length(candidate) > 1e-8f) {
+                    x_axis = glm::normalize(candidate);
+                }
+            }
+        }
+
+        if (glm::length(x_axis) < 1e-8f || std::fabs(glm::dot(x_axis, z_axis)) > 0.999f) {
+            const glm::vec3 fallback_up = (std::fabs(z_axis.y) < 0.9f)
+                ? glm::vec3(0.0f, 1.0f, 0.0f)
+                : glm::vec3(1.0f, 0.0f, 0.0f);
+            x_axis = glm::normalize(glm::cross(fallback_up, z_axis));
+        }
+
+        glm::vec3 y_axis = glm::cross(z_axis, x_axis);
+        if (glm::length(y_axis) < 1e-8f) {
+            return false;
+        }
+        y_axis = glm::normalize(y_axis);
+        x_axis = glm::normalize(glm::cross(y_axis, z_axis));
+
+        glm::mat4 matrix(1.0f);
+        matrix[0] = glm::vec4(x_axis, 0.0f);
+        matrix[1] = glm::vec4(y_axis, 0.0f);
+        matrix[2] = glm::vec4(z_axis, 0.0f);
+        matrix[3] = glm::vec4(origin_it->second, 1.0f);
+
+        axis_matrix_cache[axis_id] = matrix;
+        out_matrix = matrix;
+        return true;
+    };
+
+    std::function<bool(int, glm::mat4&)> make_local_matrix = [&](int local_id, glm::mat4 &out_matrix) -> bool {
+        const auto cache_it = local_matrix_cache.find(local_id);
+        if (cache_it != local_matrix_cache.end()) {
+            out_matrix = cache_it->second;
+            return true;
+        }
+
+        const auto lp_it = local_placements.find(local_id);
+        if (lp_it == local_placements.end()) {
+            return false;
+        }
+
+        glm::mat4 relative(1.0f);
+        if (!make_axis_matrix(lp_it->second.relative_axis_id, relative)) {
+            return false;
+        }
+
+        glm::mat4 parent(1.0f);
+        if (lp_it->second.parent_local_id >= 0) {
+            glm::mat4 resolved_parent(1.0f);
+            if (make_local_matrix(lp_it->second.parent_local_id, resolved_parent)) {
+                parent = resolved_parent;
+            }
+        }
+
+        const glm::mat4 world = parent * relative;
+        local_matrix_cache[local_id] = world;
+        out_matrix = world;
+        return true;
+    };
+
+    auto make_transform_operator_matrix = [&](int transform_id, glm::mat4 &out_matrix) -> bool {
+        const auto to_it = transform_operators.find(transform_id);
+        if (to_it == transform_operators.end()) {
+            return false;
+        }
+
+        const auto &raw_op = to_it->second;
+        const auto origin_it = points.find(raw_op.origin_id);
+        if (origin_it == points.end()) {
+            return false;
+        }
+
+        glm::vec3 x_axis(1.0f, 0.0f, 0.0f);
+        glm::vec3 y_axis(0.0f, 1.0f, 0.0f);
+
+        if (raw_op.axis1_id >= 0) {
+            const auto axis1_it = directions.find(raw_op.axis1_id);
+            if (axis1_it != directions.end() && glm::length(axis1_it->second) > 1e-8f) {
+                x_axis = glm::normalize(axis1_it->second);
+            }
+        }
+
+        if (raw_op.axis2_id >= 0) {
+            const auto axis2_it = directions.find(raw_op.axis2_id);
+            if (axis2_it != directions.end() && glm::length(axis2_it->second) > 1e-8f) {
+                y_axis = glm::normalize(axis2_it->second);
+            }
+        }
+
+        if (std::fabs(glm::dot(x_axis, y_axis)) > 0.999f) {
+            const glm::vec3 up = (std::fabs(x_axis.y) < 0.9f)
+                ? glm::vec3(0.0f, 1.0f, 0.0f)
+                : glm::vec3(1.0f, 0.0f, 0.0f);
+            y_axis = glm::normalize(glm::cross(glm::cross(x_axis, up), x_axis));
+        }
+
+        glm::vec3 z_axis = glm::cross(x_axis, y_axis);
+        if (glm::length(z_axis) < 1e-8f) {
+            return false;
+        }
+        z_axis = glm::normalize(z_axis);
+        y_axis = glm::normalize(glm::cross(z_axis, x_axis));
+
+        const float s = (std::fabs(raw_op.scale) > 1e-8f) ? raw_op.scale : 1.0f;
+
+        glm::mat4 matrix(1.0f);
+        matrix[0] = glm::vec4(x_axis * s, 0.0f);
+        matrix[1] = glm::vec4(y_axis * s, 0.0f);
+        matrix[2] = glm::vec4(z_axis * s, 0.0f);
+        matrix[3] = glm::vec4(origin_it->second, 1.0f);
+
+        out_matrix = matrix;
+        return true;
+    };
+
+    auto make_item_defined_transform_matrix = [&](int transform_id, glm::mat4 &out_matrix) -> bool {
+        const auto idt_it = item_defined_transforms.find(transform_id);
+        if (idt_it == item_defined_transforms.end()) {
+            return false;
+        }
+
+        glm::mat4 from_matrix(1.0f);
+        glm::mat4 to_matrix(1.0f);
+        if (!make_axis_matrix(idt_it->second.from_axis_id, from_matrix)) {
+            return false;
+        }
+        if (!make_axis_matrix(idt_it->second.to_axis_id, to_matrix)) {
+            return false;
+        }
+
+        out_matrix = to_matrix * glm::inverse(from_matrix);
+        return true;
+    };
+
+    auto resolve_transform_entity = [&](int entity_id, glm::mat4 &out_matrix) -> bool {
+        const std::string type = extract_type(entity_id);
+        if (type == "AXIS2_PLACEMENT_3D") {
+            return make_axis_matrix(entity_id, out_matrix);
+        }
+        if (type == "LOCAL_PLACEMENT") {
+            return make_local_matrix(entity_id, out_matrix);
+        }
+        if (type == "CARTESIAN_TRANSFORMATION_OPERATOR_3D" ||
+            type == "CARTESIAN_TRANSFORMATION_OPERATOR_3D_NON_UNIFORM") {
+            return make_transform_operator_matrix(entity_id, out_matrix);
+        }
+        if (type == "ITEM_DEFINED_TRANSFORMATION") {
+            return make_item_defined_transform_matrix(entity_id, out_matrix);
+        }
+        return false;
+    };
+
+    struct RepresentationTransformEdge {
+        int target_rep_id = -1;
+        glm::mat4 matrix = glm::mat4(1.0f);
+    };
+
+    std::unordered_map<int, std::vector<int>> representation_items;
+    representation_items.reserve(64);
+    for (const auto &[id, body] : entity_map) {
+        const std::string type = get_type(body);
+        if (type.find("SHAPE_REPRESENTATION") == std::string::npos &&
+            !body_has_keyword(body, "SHAPE_REPRESENTATION")) {
+            continue;
+        }
+
+        const auto refs = get_refs(body);
+        if (!refs.empty()) {
+            representation_items[id] = refs;
+        }
+    }
+
+    std::unordered_map<int, std::vector<RepresentationTransformEdge>> representation_edges;
+    representation_edges.reserve(64);
+    for (const auto &[id, body] : entity_map) {
+        if (!body_has_keyword(body, "REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION")) {
+            continue;
+        }
+
+        const auto refs = get_refs(body);
+        if (refs.size() < 3) {
+            continue;
+        }
+
+        const int rep_from = refs[0];
+        const int rep_to = refs[1];
+        const int transform_id = refs[2];
+
+        glm::mat4 relation_matrix(1.0f);
+        if (!resolve_transform_entity(transform_id, relation_matrix)) {
+            continue;
+        }
+
+        representation_edges[rep_from].push_back({rep_to, relation_matrix});
+    }
+
+    std::unordered_map<int, glm::mat4> representation_world_cache;
+    std::function<glm::mat4(int)> resolve_representation_world = [&](int rep_id) -> glm::mat4 {
+        const auto cache_it = representation_world_cache.find(rep_id);
+        if (cache_it != representation_world_cache.end()) {
+            return cache_it->second;
+        }
+
+        glm::mat4 world(1.0f);
+        const auto edge_it = representation_edges.find(rep_id);
+        if (edge_it != representation_edges.end() && !edge_it->second.empty()) {
+            const RepresentationTransformEdge &edge = edge_it->second.front();
+            world = resolve_representation_world(edge.target_rep_id) * edge.matrix;
+        }
+
+        representation_world_cache[rep_id] = world;
+        return world;
     };
 
     // ---------- resolve circle geometries ----------
@@ -1173,9 +1652,72 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
     struct BodySeed {
         std::string label;
         std::vector<int> face_ids;
+        glm::mat4 transform = glm::mat4(1.0f);
     };
     std::vector<BodySeed> body_seeds;
     std::unordered_set<int> assigned_faces;
+
+    auto find_nearest_local_placement_matrix = [&](int root_id, glm::mat4 &out_matrix) -> bool {
+        std::vector<int> queue;
+        queue.push_back(root_id);
+        std::size_t head = 0;
+        std::unordered_set<int> visited;
+        visited.insert(root_id);
+
+        while (head < queue.size()) {
+            const int current = queue[head++];
+            const auto rev_it = reverse_refs.find(current);
+            if (rev_it == reverse_refs.end()) {
+                continue;
+            }
+            for (int parent_id : rev_it->second) {
+                if (!visited.insert(parent_id).second) {
+                    continue;
+                }
+                if (extract_type(parent_id) == "LOCAL_PLACEMENT") {
+                    glm::mat4 matrix(1.0f);
+                    if (make_local_matrix(parent_id, matrix)) {
+                        out_matrix = matrix;
+                        return true;
+                    }
+                }
+                queue.push_back(parent_id);
+            }
+        }
+
+        return false;
+    };
+
+    auto find_representation_transform_for_item = [&](int item_id, glm::mat4 &out_matrix) -> bool {
+        std::vector<int> queue;
+        queue.push_back(item_id);
+        std::size_t head = 0;
+        std::unordered_set<int> visited;
+        visited.insert(item_id);
+
+        while (head < queue.size()) {
+            const int current = queue[head++];
+            const auto rev_it = reverse_refs.find(current);
+            if (rev_it == reverse_refs.end()) {
+                continue;
+            }
+
+            for (int parent_id : rev_it->second) {
+                if (!visited.insert(parent_id).second) {
+                    continue;
+                }
+
+                if (representation_items.find(parent_id) != representation_items.end()) {
+                    out_matrix = resolve_representation_world(parent_id);
+                    return true;
+                }
+
+                queue.push_back(parent_id);
+            }
+        }
+
+        return false;
+    };
 
     auto collect_faces_from = [&](int root_id, std::unordered_set<int> &out_faces) {
         std::vector<int> stack{root_id};
@@ -1193,9 +1735,52 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
         }
     };
 
+    auto collect_solid_roots_from = [&](int root_id, std::unordered_set<int> &out_solids) {
+        std::vector<int> stack{root_id};
+        std::unordered_set<int> visited;
+        while (!stack.empty()) {
+            const int cur = stack.back();
+            stack.pop_back();
+            if (!visited.insert(cur).second) continue;
+
+            const std::string type = extract_type(cur);
+            if (type == "MANIFOLD_SOLID_BREP" || type == "BREP_WITH_VOIDS") {
+                out_solids.insert(cur);
+                continue;
+            }
+
+            for (int r : get_body_refs(cur)) stack.push_back(r);
+        }
+    };
+
+    std::unordered_map<int, int> representation_map_to_representation;
+    for (const auto &[id, body] : entity_map) {
+        if (get_type(body) != "REPRESENTATION_MAP") continue;
+        const auto refs = get_refs(body);
+        if (refs.size() >= 2) {
+            representation_map_to_representation[id] = refs[1];
+        }
+    }
+
+    std::unordered_set<int> solids_with_mapped_instances;
+    for (const auto &[id, body] : entity_map) {
+        if (get_type(body) != "MAPPED_ITEM") continue;
+        const auto refs = get_refs(body);
+        if (refs.size() < 2) continue;
+
+        const int rep_map_id = refs[0];
+        const auto rep_it = representation_map_to_representation.find(rep_map_id);
+        if (rep_it == representation_map_to_representation.end()) continue;
+
+        std::unordered_set<int> solid_roots;
+        collect_solid_roots_from(rep_it->second, solid_roots);
+        solids_with_mapped_instances.insert(solid_roots.begin(), solid_roots.end());
+    }
+
     for (const auto &[id, body] : entity_map) {
         const std::string type = get_type(body);
         if (type != "MANIFOLD_SOLID_BREP" && type != "BREP_WITH_VOIDS") continue;
+        if (solids_with_mapped_instances.find(id) != solids_with_mapped_instances.end()) continue;
         const auto refs = get_refs(body);
         if (refs.empty()) continue;
 
@@ -1207,8 +1792,69 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
         seed.label = parsed_name_or(body, "Body " + std::to_string(body_seeds.size() + 1));
         seed.face_ids.assign(body_faces.begin(), body_faces.end());
         std::sort(seed.face_ids.begin(), seed.face_ids.end());
+        glm::mat4 placement(1.0f);
+        if (find_nearest_local_placement_matrix(id, placement)) {
+            seed.transform = placement;
+        }
+        glm::mat4 rep_transform(1.0f);
+        if (find_representation_transform_for_item(id, rep_transform)) {
+            seed.transform = rep_transform * seed.transform;
+        }
         body_seeds.push_back(seed);
         assigned_faces.insert(body_faces.begin(), body_faces.end());
+    }
+
+    for (const auto &[id, body] : entity_map) {
+        if (get_type(body) != "MAPPED_ITEM") continue;
+
+        const auto refs = get_refs(body);
+        if (refs.size() < 2) continue;
+
+        const int rep_map_id = refs[0];
+        const int target_transform_id = refs[1];
+
+        const auto rep_it = representation_map_to_representation.find(rep_map_id);
+        if (rep_it == representation_map_to_representation.end()) continue;
+
+        glm::mat4 source_matrix(1.0f);
+        const auto rep_map_entity_it = entity_map.find(rep_map_id);
+        if (rep_map_entity_it != entity_map.end()) {
+            const auto map_refs = get_refs(rep_map_entity_it->second);
+            if (!map_refs.empty()) {
+                glm::mat4 source_candidate(1.0f);
+                if (resolve_transform_entity(map_refs[0], source_candidate)) {
+                    source_matrix = source_candidate;
+                }
+            }
+        }
+
+        glm::mat4 target_matrix(1.0f);
+        if (!resolve_transform_entity(target_transform_id, target_matrix)) {
+            continue;
+        }
+        const glm::mat4 map_transform = target_matrix * glm::inverse(source_matrix);
+
+        std::unordered_set<int> mapped_solid_roots;
+        collect_solid_roots_from(rep_it->second, mapped_solid_roots);
+        for (int solid_root_id : mapped_solid_roots) {
+            std::unordered_set<int> body_faces;
+            collect_faces_from(solid_root_id, body_faces);
+            if (body_faces.empty()) continue;
+
+            const auto solid_it = entity_map.find(solid_root_id);
+            const std::string fallback_name = "Body " + std::to_string(body_seeds.size() + 1);
+            const std::string base_name = (solid_it != entity_map.end())
+                ? parsed_name_or(solid_it->second, fallback_name)
+                : fallback_name;
+
+            BodySeed seed;
+            seed.label = base_name + " (inst " + std::to_string(id) + ")";
+            seed.face_ids.assign(body_faces.begin(), body_faces.end());
+            std::sort(seed.face_ids.begin(), seed.face_ids.end());
+            seed.transform = map_transform;
+            body_seeds.push_back(std::move(seed));
+            assigned_faces.insert(body_faces.begin(), body_faces.end());
+        }
     }
 
     std::vector<int> all_faces;
@@ -1235,6 +1881,7 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
     };
     struct RawBody {
         std::string label;
+        glm::mat4 transform = glm::mat4(1.0f);
         std::vector<RawFace> faces;
         std::vector<std::pair<glm::vec3, glm::vec3>> edges;
         std::unordered_set<unsigned long long> edge_dedupe;
@@ -1281,6 +1928,10 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
                                 | static_cast<unsigned long long>(static_cast<unsigned int>(std::max(vs,ve)));
                 std::vector<std::pair<glm::vec3, glm::vec3>> edge_segs;
                 tessellate_edge_entry(ec_it->second, edge_segs);
+                for (auto &seg : edge_segs) {
+                    seg.first = transform_point(out_body.transform, seg.first);
+                    seg.second = transform_point(out_body.transform, seg.second);
+                }
                 if (out_body.edge_dedupe.insert(key).second) {
                     out_body.edge_entity_count += 1;
                     out_body.edges.insert(out_body.edges.end(), edge_segs.begin(), edge_segs.end());
@@ -1326,6 +1977,7 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
     for (const auto &seed : body_seeds) {
         RawBody body;
         body.label = seed.label;
+        body.transform = seed.transform;
         for (int face_id : seed.face_ids) {
             append_face_geometry(face_id, body);
         }
@@ -1370,6 +2022,12 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
         return false;
     }
     const float scale = 1.6f / max_dim;
+    std::printf("[STEP] Raw bounds min=(%.6f, %.6f, %.6f) max=(%.6f, %.6f, %.6f) size=(%.6f, %.6f, %.6f)\n",
+                bb_min.x, bb_min.y, bb_min.z,
+                bb_max.x, bb_max.y, bb_max.z,
+                bb_size.x, bb_size.y, bb_size.z);
+    std::printf("[STEP] Normalization center=(%.6f, %.6f, %.6f) scale=%.9f\n",
+                center.x, center.y, center.z, scale);
     auto xform = [&](const glm::vec3 &v) -> glm::vec3 { return (v - center) * scale; };
 
     // ---------- build GPU vertex buffers ----------
@@ -1414,20 +2072,62 @@ bool Renderer::import_step_file(const std::string &path, std::string &error_mess
             body_render.line_verts.push_back(edge_color.r); body_render.line_verts.push_back(edge_color.g); body_render.line_verts.push_back(edge_color.b);
         }
 
-        if (body_render.line_verts.empty() && body_render.solid_verts.empty()) continue;
+        upload_geometry_vao(body_render.solid_vao,
+                            body_render.solid_vbo,
+                            body_render.solid_vertex_count,
+                            body_render.solid_verts,
+                            GL_STATIC_DRAW);
+        upload_geometry_vao(body_render.line_vao,
+                            body_render.line_vbo,
+                            body_render.line_vertex_count,
+                            body_render.line_verts,
+                            GL_STATIC_DRAW);
+
+        body_render.solid_verts.clear();
+        body_render.solid_verts.shrink_to_fit();
+        body_render.line_verts.clear();
+        body_render.line_verts.shrink_to_fit();
+
+        if (body_render.line_vertex_count <= 0 && body_render.solid_vertex_count <= 0) continue;
         m_imported_bodies.push_back(std::move(body_item));
         m_imported_body_render_data.push_back(std::move(body_render));
     }
 
     m_has_imported_model = !m_imported_body_render_data.empty();
+    std::printf("[STEP] Imported bodies: %zu\n", m_imported_bodies.size());
     clear_hovered();
     clear_selection();
     camera.reset();
     return m_has_imported_model;
 }
 
+void Renderer::release_imported_gpu_buffers()
+{
+    for (auto &body : m_imported_body_render_data) {
+        if (body.line_vao != 0) {
+            glDeleteVertexArrays(1, &body.line_vao);
+            body.line_vao = 0;
+        }
+        if (body.line_vbo != 0) {
+            glDeleteBuffers(1, &body.line_vbo);
+            body.line_vbo = 0;
+        }
+        if (body.solid_vao != 0) {
+            glDeleteVertexArrays(1, &body.solid_vao);
+            body.solid_vao = 0;
+        }
+        if (body.solid_vbo != 0) {
+            glDeleteBuffers(1, &body.solid_vbo);
+            body.solid_vbo = 0;
+        }
+        body.line_vertex_count = 0;
+        body.solid_vertex_count = 0;
+    }
+}
+
 void Renderer::clear_imported_model()
 {
+    release_imported_gpu_buffers();
     m_has_imported_model = false;
     m_imported_bodies.clear();
     m_imported_body_render_data.clear();
@@ -2162,6 +2862,7 @@ bool Renderer::pivot_marker_visible() const
 
 Renderer::~Renderer()
 {
+    release_imported_gpu_buffers();
     glDeleteVertexArrays(1, &m_axis_vao);
     glDeleteBuffers(1, &m_axis_vbo);
     glDeleteVertexArrays(1, &m_cube_vao);

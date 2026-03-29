@@ -204,8 +204,16 @@ private:
     struct ImportedBodyRenderData {
         std::vector<float> line_verts;
         std::vector<float> solid_verts;
+        GLuint line_vao = 0;
+        GLuint line_vbo = 0;
+        GLsizei line_vertex_count = 0;
+        GLuint solid_vao = 0;
+        GLuint solid_vbo = 0;
+        GLsizei solid_vertex_count = 0;
     };
     std::vector<ImportedBodyRenderData> m_imported_body_render_data;
+
+    void release_imported_gpu_buffers();
 
     glm::mat4 projection_matrix() const;
     PrimitiveHit pick_face(double mouse_x, double mouse_y) const;
