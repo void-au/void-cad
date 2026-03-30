@@ -1,5 +1,6 @@
 #pragma once
 #include <epoxy/gl.h>
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <vector>
@@ -71,6 +72,16 @@ public:
         bool visible = true;
     };
 
+    struct PreparedImportBody {
+        ImportedBodyItem item;
+        std::vector<float> line_verts;
+        std::vector<float> solid_verts;
+    };
+
+    struct PreparedImport {
+        std::vector<PreparedImportBody> bodies;
+    };
+
     Renderer()  = default;
     ~Renderer();
 
@@ -89,6 +100,14 @@ public:
     void set_projection_mode(ProjectionMode mode) { m_projection_mode = mode; }
     ProjectionMode projection_mode() const { return m_projection_mode; }
     bool is_isometric() const { return m_projection_mode == ProjectionMode::Isometric; }
+
+    void set_lighting_enabled(bool enabled) { m_lighting_enabled = enabled; }
+    bool lighting_enabled() const { return m_lighting_enabled; }
+    void set_light_ambient(float ambient);
+    float light_ambient() const { return m_light_ambient; }
+    void set_light_direction(const glm::vec3 &dir);
+    const glm::vec3 &light_direction() const { return m_light_dir; }
+    void rotate_light(float yaw_degrees, float pitch_degrees);
 
     void update_hovered(double mouse_x, double mouse_y);
     void clear_hovered();
@@ -130,6 +149,11 @@ public:
 
     // Import a STEP file (edge wireframe only for now) and fit it to view.
     bool import_step_file(const std::string &path, std::string &error_message);
+    bool prepare_step_file_import(const std::string &path,
+                                  PreparedImport &out_prepared,
+                                  std::string &error_message,
+                                  std::atomic<float> *progress = nullptr) const;
+    bool apply_prepared_step_import(PreparedImport &&prepared, std::string &error_message);
     void clear_imported_model();
     bool has_imported_model() const { return m_has_imported_model; }
     const std::vector<ImportedBodyItem> &imported_bodies() const { return m_imported_bodies; }
@@ -148,10 +172,19 @@ private:
     GLuint m_uMVP    = 0;   // uniform location
     GLuint m_uColorMul = 0;
     GLuint m_uColorAdd = 0;
+    GLuint m_uLit = 0;
+    GLuint m_uLightDir = 0;
+    GLuint m_uAmbient = 0;
+
+    bool m_lighting_enabled = true;
+    glm::vec3 m_light_dir = glm::normalize(glm::vec3(0.55f, 0.75f, 0.40f));
+    float m_light_ambient = 0.36f;
 
     // Axis gizmo (3 coloured lines)
     GLuint m_axis_vao = 0;
     GLuint m_axis_vbo = 0;
+    GLuint m_axis_cone_vao = 0;
+    GLuint m_axis_cone_vbo = 0;
 
     // Wireframe unit cube (12 edges)
     GLuint m_cube_vao  = 0;

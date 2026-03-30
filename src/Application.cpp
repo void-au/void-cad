@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <future>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -126,12 +128,42 @@ UiLayout build_ui_layout(const AppState &app)
         }
     }
 
+    if (app.show_lighting_modal) {
+        const float modal_w = 360.0f;
+        const float modal_h = 272.0f;
+        const float mx = (static_cast<float>(app.window_width) - modal_w) * 0.5f;
+        const float my = (static_cast<float>(app.window_height) - modal_h) * 0.5f;
+        layout.lighting_modal_rect = {mx, my, modal_w, modal_h};
+
+        const float row_y0 = my + 48.0f;
+        const float row_gap = 42.0f;
+        layout.lighting_modal_buttons[0] = {mx + modal_w - 34.0f, my + 8.0f, 24.0f, 24.0f}; // close
+        layout.lighting_modal_buttons[1] = {mx + 16.0f, row_y0, 152.0f, 30.0f};              // toggle
+        layout.lighting_modal_buttons[2] = {mx + 16.0f, row_y0 + row_gap, 72.0f, 30.0f};      // ambient-
+        layout.lighting_modal_buttons[3] = {mx + 96.0f, row_y0 + row_gap, 72.0f, 30.0f};      // ambient+
+        layout.lighting_modal_buttons[4] = {mx + 16.0f, row_y0 + row_gap * 2.0f, 72.0f, 30.0f};   // light left
+        layout.lighting_modal_buttons[5] = {mx + 96.0f, row_y0 + row_gap * 2.0f, 72.0f, 30.0f};   // light right
+        layout.lighting_modal_buttons[6] = {mx + 176.0f, row_y0 + row_gap * 2.0f, 72.0f, 30.0f};  // light up
+        layout.lighting_modal_buttons[7] = {mx + 256.0f, row_y0 + row_gap * 2.0f, 72.0f, 30.0f};  // light down
+    }
+
     return layout;
 }
 
 bool point_hits_ui(const AppState &app)
 {
     const UiLayout layout = build_ui_layout(app);
+
+    if (app.show_lighting_modal) {
+        if (layout.lighting_modal_rect.contains(app.mouse_x, app.mouse_y)) {
+            return true;
+        }
+        for (const UiRect &rect : layout.lighting_modal_buttons) {
+            if (rect.contains(app.mouse_x, app.mouse_y)) {
+                return true;
+            }
+        }
+    }
 
     for (const UiRect &rect : layout.menu_buttons) {
         if (rect.contains(app.mouse_x, app.mouse_y)) {
@@ -215,7 +247,11 @@ std::string trim_whitespace_copy(std::string s)
 
 std::string run_dialog_command(const char *command)
 {
+#if defined(_WIN32)
+    FILE *pipe = _popen(command, "r");
+#else
     FILE *pipe = popen(command, "r");
+#endif
     if (pipe == nullptr) {
         return "";
     }
@@ -225,20 +261,38 @@ std::string run_dialog_command(const char *command)
     while (std::fgets(buffer, sizeof(buffer), pipe) != nullptr) {
         output += buffer;
     }
+#if defined(_WIN32)
+    (void)_pclose(pipe);
+#else
     (void)pclose(pipe);
+#endif
     return trim_whitespace_copy(output);
+}
+
+std::vector<const char *> step_dialog_commands()
+{
+#if defined(_WIN32)
+    return {
+        R"(powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Filter='STEP files (*.step;*.stp)|*.step;*.stp|All files (*.*)|*.*'; $d.Title='Open STEP file'; if($d.ShowDialog() -eq 'OK'){Write-Output $d.FileName}" 2>nul)",
+    };
+#elif defined(__APPLE__)
+    return {
+        "osascript -e 'set f to choose file with prompt \"Open STEP file\" of type {\"step\",\"stp\"}' -e 'POSIX path of f' 2>/dev/null",
+    };
+#else
+    return {
+        "zenity --file-selection --title='Open STEP file' --file-filter='STEP files | *.step *.stp' --file-filter='All files | *' 2>/dev/null",
+        "kdialog --title 'Open STEP file' --getopenfilename \"$HOME\" '*.step *.stp|STEP files' 2>/dev/null",
+        "yad --file --title='Open STEP file' --file-filter='STEP files (*.step *.stp)' 2>/dev/null",
+        "qarma --file-selection --title='Open STEP file' --file-filter='STEP files | *.step *.stp' --file-filter='All files | *' 2>/dev/null",
+    };
+#endif
 }
 
 std::string pick_step_file_from_system_dialog()
 {
-    static const std::array<const char *, 4> kDialogCommands = {
-        "zenity --file-selection --title='Open STEP file' --file-filter='STEP files | *.step *.stp' --file-filter='All files | *' 2>/dev/null",
-        "kdialog --getopenfilename \"$HOME\" '*.step *.stp|STEP files' 2>/dev/null",
-        "yad --file --title='Open STEP file' --file-filter='STEP files (*.step *.stp)' 2>/dev/null",
-        "qarma --file-selection --title='Open STEP file' --file-filter='STEP files | *.step *.stp' --file-filter='All files | *' 2>/dev/null",
-    };
-
-    for (const char *command : kDialogCommands) {
+    const std::vector<const char *> commands = step_dialog_commands();
+    for (const char *command : commands) {
         const std::string selected = run_dialog_command(command);
         if (!selected.empty()) {
             return selected;
@@ -260,11 +314,57 @@ void import_step_into_scene(AppState &app, const std::string &path)
         return;
     }
 
-    std::string error;
-    if (app.renderer.import_step_file(cleaned, error)) {
-        set_status(app, "STEP IMPORTED — " + cleaned);
+    if (app.step_load_in_progress) {
+        set_status(app, "STEP IMPORT ALREADY RUNNING");
+        return;
+    }
+
+    app.step_load_in_progress = true;
+    app.step_load_progress = std::make_shared<std::atomic<float>>(0.0f);
+    auto progress = app.step_load_progress;
+
+    app.step_load_future = std::async(std::launch::async,
+                                      [path_copy = cleaned, progress, &renderer = app.renderer]() mutable {
+                                          AppState::StepLoadResult result;
+                                          result.path = path_copy;
+                                          result.ok = renderer.prepare_step_file_import(path_copy,
+                                                                                         result.prepared,
+                                                                                         result.error,
+                                                                                         progress.get());
+                                          if (progress) {
+                                              progress->store(1.0f);
+                                          }
+                                          return result;
+                                      });
+
+    set_status(app, "STEP IMPORT STARTED — " + cleaned);
+}
+
+void poll_step_import(AppState &app)
+{
+    if (!app.step_load_in_progress || !app.step_load_future.valid()) {
+        return;
+    }
+
+    const auto status = app.step_load_future.wait_for(std::chrono::milliseconds(0));
+    if (status != std::future_status::ready) {
+        return;
+    }
+
+    AppState::StepLoadResult result = app.step_load_future.get();
+    app.step_load_in_progress = false;
+    app.step_load_progress.reset();
+
+    if (!result.ok) {
+        set_status(app, "STEP IMPORT FAILED — " + result.error);
+        return;
+    }
+
+    std::string apply_error;
+    if (app.renderer.apply_prepared_step_import(std::move(result.prepared), apply_error)) {
+        set_status(app, "STEP IMPORTED — " + result.path);
     } else {
-        set_status(app, "STEP IMPORT FAILED — " + error);
+        set_status(app, "STEP IMPORT FAILED — " + apply_error);
     }
 }
 
@@ -627,6 +727,10 @@ void handle_menu_action(AppState &app, int menu_index, int item_index)
             app.show_hierarchy = !app.show_hierarchy;
             set_status(app, app.show_hierarchy ? "MODEL HIERARCHY SHOWN" : "MODEL HIERARCHY HIDDEN");
             break;
+        case 4:
+            app.show_lighting_modal = true;
+            set_status(app, "LIGHTING PANEL OPENED");
+            break;
         default: break;
         }
         break;
@@ -653,6 +757,55 @@ void drop_callback(GLFWwindow *window, int path_count, const char **paths)
 bool handle_left_press(AppState &app)
 {
     const UiLayout layout = build_ui_layout(app);
+
+    if (app.show_lighting_modal) {
+        if (layout.lighting_modal_buttons[0].contains(app.mouse_x, app.mouse_y)) {
+            app.show_lighting_modal = false;
+            set_status(app, "LIGHTING PANEL CLOSED");
+            return true;
+        }
+        if (layout.lighting_modal_buttons[1].contains(app.mouse_x, app.mouse_y)) {
+            const bool next = !app.renderer.lighting_enabled();
+            app.renderer.set_lighting_enabled(next);
+            set_status(app, next ? "LIGHTING ENABLED" : "LIGHTING DISABLED");
+            return true;
+        }
+        if (layout.lighting_modal_buttons[2].contains(app.mouse_x, app.mouse_y)) {
+            app.renderer.set_light_ambient(app.renderer.light_ambient() - 0.05f);
+            set_status(app, "LIGHTING AMBIENT LOWERED");
+            return true;
+        }
+        if (layout.lighting_modal_buttons[3].contains(app.mouse_x, app.mouse_y)) {
+            app.renderer.set_light_ambient(app.renderer.light_ambient() + 0.05f);
+            set_status(app, "LIGHTING AMBIENT RAISED");
+            return true;
+        }
+        if (layout.lighting_modal_buttons[4].contains(app.mouse_x, app.mouse_y)) {
+            app.renderer.rotate_light(-10.0f, 0.0f);
+            set_status(app, "LIGHT DIRECTION LEFT");
+            return true;
+        }
+        if (layout.lighting_modal_buttons[5].contains(app.mouse_x, app.mouse_y)) {
+            app.renderer.rotate_light(10.0f, 0.0f);
+            set_status(app, "LIGHT DIRECTION RIGHT");
+            return true;
+        }
+        if (layout.lighting_modal_buttons[6].contains(app.mouse_x, app.mouse_y)) {
+            app.renderer.rotate_light(0.0f, 10.0f);
+            set_status(app, "LIGHT DIRECTION UP");
+            return true;
+        }
+        if (layout.lighting_modal_buttons[7].contains(app.mouse_x, app.mouse_y)) {
+            app.renderer.rotate_light(0.0f, -10.0f);
+            set_status(app, "LIGHT DIRECTION DOWN");
+            return true;
+        }
+
+        if (!layout.lighting_modal_rect.contains(app.mouse_x, app.mouse_y)) {
+            app.show_lighting_modal = false;
+            return true;
+        }
+    }
 
     if (app.tool_mode == ToolMode::Sketch && app.renderer.sketch_tool() == Renderer::SketchTool::Rectangle) {
         if (app.measure_width_rect.contains(app.mouse_x, app.mouse_y) ||
@@ -905,6 +1058,92 @@ void render_ui(AppState &app)
         }
     }
 
+    if (app.show_lighting_modal) {
+        const UiRect dim = {0.0f, 0.0f, static_cast<float>(app.window_width), static_cast<float>(app.window_height)};
+        app.ui.filled_rect(dim, rgba(0.0f, 0.0f, 0.0f, 0.32f));
+
+        app.ui.filled_rect(layout.lighting_modal_rect, rgba(0.04f, 0.04f, 0.04f, 0.96f));
+        app.ui.outline_rect(layout.lighting_modal_rect, 1.0f, rgba(1.0f, 1.0f, 1.0f, 0.35f));
+
+        app.ui.text(layout.lighting_modal_rect.x + 14.0f,
+                    layout.lighting_modal_rect.y + 10.0f,
+                    "LIGHTING",
+                    kTextScale,
+                    rgba(1.0f, 1.0f, 1.0f, 1.0f));
+
+        draw_button(app.ui,
+                    layout.lighting_modal_buttons[0],
+                    "X",
+                    layout.lighting_modal_buttons[0].contains(app.mouse_x, app.mouse_y),
+                    false);
+
+        draw_button(app.ui,
+                    layout.lighting_modal_buttons[1],
+                    app.renderer.lighting_enabled() ? "LIGHTING: ON" : "LIGHTING: OFF",
+                    layout.lighting_modal_buttons[1].contains(app.mouse_x, app.mouse_y),
+                    app.renderer.lighting_enabled());
+
+        draw_button(app.ui,
+                    layout.lighting_modal_buttons[2],
+                    "AMBIENT -",
+                    layout.lighting_modal_buttons[2].contains(app.mouse_x, app.mouse_y),
+                    false);
+        draw_button(app.ui,
+                    layout.lighting_modal_buttons[3],
+                    "AMBIENT +",
+                    layout.lighting_modal_buttons[3].contains(app.mouse_x, app.mouse_y),
+                    false);
+
+        draw_button(app.ui,
+                layout.lighting_modal_buttons[4],
+                "LIGHT <",
+                layout.lighting_modal_buttons[4].contains(app.mouse_x, app.mouse_y),
+                false);
+        draw_button(app.ui,
+                layout.lighting_modal_buttons[5],
+                "LIGHT >",
+                layout.lighting_modal_buttons[5].contains(app.mouse_x, app.mouse_y),
+                false);
+        draw_button(app.ui,
+                layout.lighting_modal_buttons[6],
+                "LIGHT ^",
+                layout.lighting_modal_buttons[6].contains(app.mouse_x, app.mouse_y),
+                false);
+        draw_button(app.ui,
+                layout.lighting_modal_buttons[7],
+                "LIGHT v",
+                layout.lighting_modal_buttons[7].contains(app.mouse_x, app.mouse_y),
+                false);
+
+        const int ambient_pct = static_cast<int>(std::round(app.renderer.light_ambient() * 100.0f));
+        const std::string ambient_label = "Ambient: " + std::to_string(ambient_pct) + "%";
+        app.ui.text(layout.lighting_modal_rect.x + 186.0f,
+                    layout.lighting_modal_rect.y + 92.0f,
+                    ambient_label,
+                    kTextScale,
+                    rgba(0.95f, 0.95f, 0.95f, 0.98f));
+
+        const glm::vec3 light_dir = app.renderer.light_direction();
+        char light_label[96] = {};
+        std::snprintf(light_label,
+                  sizeof(light_label),
+                  "Dir: %.2f, %.2f, %.2f",
+                  light_dir.x,
+                  light_dir.y,
+                  light_dir.z);
+        app.ui.text(layout.lighting_modal_rect.x + 186.0f,
+                layout.lighting_modal_rect.y + 134.0f,
+                light_label,
+                kTextScale,
+                rgba(0.95f, 0.95f, 0.95f, 0.98f));
+
+        app.ui.text(layout.lighting_modal_rect.x + 16.0f,
+                    layout.lighting_modal_rect.y + layout.lighting_modal_rect.h - 34.0f,
+                "Realtime directional light, no shadows",
+                    kTextScale,
+                    rgba(0.72f, 0.72f, 0.72f, 0.95f));
+    }
+
     const UiRect status = badge_rect(app.ui,
                                      kOuterMargin,
                                      static_cast<float>(app.window_height) - kOuterMargin - kBadgeHeight,
@@ -986,6 +1225,21 @@ void render_ui(AppState &app)
                 }
             }
         }
+    }
+
+    if (app.step_load_in_progress) {
+        float progress = 0.0f;
+        if (app.step_load_progress) {
+            progress = app.step_load_progress->load();
+        }
+        progress = std::clamp(progress, 0.0f, 1.0f);
+        const UiRect bar = {
+            0.0f,
+            static_cast<float>(app.window_height) - 2.0f,
+            static_cast<float>(app.window_width) * progress,
+            2.0f,
+        };
+        app.ui.filled_rect(bar, rgba(0.22f, 1.0f, 0.38f, 1.0f));
     }
 
     app.ui.flush();
@@ -1330,6 +1584,7 @@ int Application::run()
             }
 
             glfwPollEvents();
+            poll_step_import(app);
 
             // Update camera animation if active
             if (app.camera_anim.active) {

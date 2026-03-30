@@ -1,6 +1,9 @@
 #pragma once
 
 #include <array>
+#include <atomic>
+#include <future>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,6 +31,8 @@ struct UiLayout {
     UiRect hierarchy_root_rect{};
     std::vector<UiRect> hierarchy_row_rects;
     std::vector<UiRect> hierarchy_eye_rects;
+    UiRect lighting_modal_rect{};
+    std::array<UiRect, 8> lighting_modal_buttons{};
 };
 
 namespace ui {
@@ -56,7 +61,7 @@ inline constexpr std::array<std::string_view, 4> kMenuTitles = {
 inline const std::array<std::vector<std::string>, 4> kMenuItems = {
     std::vector<std::string>{"NEW", "OPEN", "SAVE", "SAVE AS", "QUIT"},
     std::vector<std::string>{"UNDO", "REDO", "PREFERENCES"},
-    std::vector<std::string>{"RESET CAMERA", "WIREFRAME", "ISO/PERSP", "HIERARCHY"},
+    std::vector<std::string>{"RESET CAMERA", "WIREFRAME", "ISO/PERSP", "HIERARCHY", "LIGHTING"},
     std::vector<std::string>{"ABOUT"}
 };
 
@@ -70,6 +75,13 @@ inline constexpr std::array<std::string_view, 3> kSketchToolLabels = {
 } // namespace ui
 
 struct AppState {
+    struct StepLoadResult {
+        bool ok = false;
+        std::string path;
+        std::string error;
+        Renderer::PreparedImport prepared;
+    };
+
     GLFWwindow *window = nullptr;
     Renderer renderer;
     UiRenderer ui;
@@ -101,6 +113,10 @@ struct AppState {
     int open_menu = -1;
     bool wireframe = false;
     bool show_hierarchy = true;
+    bool show_lighting_modal = false;
+    bool step_load_in_progress = false;
+    std::shared_ptr<std::atomic<float>> step_load_progress;
+    std::future<StepLoadResult> step_load_future;
     ToolMode tool_mode = ToolMode::None;
     float hierarchy_scroll = 0.0f;
 
