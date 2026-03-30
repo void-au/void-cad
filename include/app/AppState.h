@@ -79,7 +79,6 @@ struct AppState {
         bool ok = false;
         std::string path;
         std::string error;
-        Renderer::PreparedImport prepared;
     };
 
     GLFWwindow *window = nullptr;

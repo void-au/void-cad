@@ -21,6 +21,7 @@ LIBS_ALL="$GLFW_LIBS $EPOXY_LIBS $FREETYPE_LIBS"
 # Collect all .cpp sources under src/
 SRCS=$(find src -name '*.cpp')
 
+
 if [ -z "$SRCS" ]; then
     echo "ERROR: No .cpp files found in src/"
     exit 1

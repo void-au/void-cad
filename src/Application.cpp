@@ -327,10 +327,7 @@ void import_step_into_scene(AppState &app, const std::string &path)
                                       [path_copy = cleaned, progress, &renderer = app.renderer]() mutable {
                                           AppState::StepLoadResult result;
                                           result.path = path_copy;
-                                          result.ok = renderer.prepare_step_file_import(path_copy,
-                                                                                         result.prepared,
-                                                                                         result.error,
-                                                                                         progress.get());
+                                          result.ok = renderer.import_model_file(path_copy, result.error);
                                           if (progress) {
                                               progress->store(1.0f);
                                           }
@@ -360,11 +357,10 @@ void poll_step_import(AppState &app)
         return;
     }
 
-    std::string apply_error;
-    if (app.renderer.apply_prepared_step_import(std::move(result.prepared), apply_error)) {
+    if (result.ok) {
         set_status(app, "STEP IMPORTED — " + result.path);
     } else {
-        set_status(app, "STEP IMPORT FAILED — " + apply_error);
+        set_status(app, "STEP IMPORT FAILED — " + result.error);
     }
 }
 
@@ -1557,6 +1553,14 @@ int Application::run()
         app.renderer.init();
         app.renderer.set_viewport(app.framebuffer_width, app.framebuffer_height);
         app.renderer.set_wireframe(app.wireframe);
+        {
+            std::string startup_error;
+            if (app.renderer.load_debug_cylinder_scene(startup_error)) {
+                app.status = "DEBUG CYLINDER SCENE LOADED";
+            } else {
+                app.status = "DEBUG SCENE LOAD FAILED — " + startup_error;
+            }
+        }
         app.ui.init();
 
         glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);

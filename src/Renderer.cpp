@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
+#include "loaders/StepLoader.h"
 // OrbitCamera is included transitively via Renderer.h
 
 // ---------------------------------------------------------------------------
@@ -243,6 +244,80 @@ static std::vector<float> make_pivot_marker_verts()
     }
 
     return verts;
+}
+
+static void append_colored_vertex(std::vector<float> &verts,
+                                  const glm::vec3 &position,
+                                  const glm::vec3 &color)
+{
+    verts.push_back(position.x);
+    verts.push_back(position.y);
+    verts.push_back(position.z);
+    verts.push_back(color.r);
+    verts.push_back(color.g);
+    verts.push_back(color.b);
+}
+
+static glm::vec3 transform_position(const glm::mat4 &transform, const glm::vec3 &local)
+{
+    const glm::vec4 p = transform * glm::vec4(local, 1.0f);
+    return glm::vec3(p.x, p.y, p.z);
+}
+
+static void append_debug_cylinder_mesh(Renderer::PreparedImportBody &body,
+                                       const glm::mat4 &transform,
+                                       float radius,
+                                       float half_height,
+                                       int radial_segments,
+                                       const glm::vec3 &line_color,
+                                       const glm::vec3 &solid_color)
+{
+    const int segs = std::max(12, radial_segments);
+    const float y0 = -half_height;
+    const float y1 = half_height;
+
+    auto local_ring_point = [&](float angle, float y) {
+        return glm::vec3(std::cos(angle) * radius, y, std::sin(angle) * radius);
+    };
+
+    for (int i = 0; i < segs; ++i) {
+        const float a0 = (static_cast<float>(i) / static_cast<float>(segs)) * glm::two_pi<float>();
+        const float a1 = (static_cast<float>(i + 1) / static_cast<float>(segs)) * glm::two_pi<float>();
+
+        const glm::vec3 p00 = transform_position(transform, local_ring_point(a0, y0));
+        const glm::vec3 p10 = transform_position(transform, local_ring_point(a1, y0));
+        const glm::vec3 p01 = transform_position(transform, local_ring_point(a0, y1));
+        const glm::vec3 p11 = transform_position(transform, local_ring_point(a1, y1));
+
+        append_colored_vertex(body.solid_verts, p00, solid_color);
+        append_colored_vertex(body.solid_verts, p10, solid_color);
+        append_colored_vertex(body.solid_verts, p11, solid_color);
+        append_colored_vertex(body.solid_verts, p00, solid_color);
+        append_colored_vertex(body.solid_verts, p11, solid_color);
+        append_colored_vertex(body.solid_verts, p01, solid_color);
+
+        const glm::vec3 c_top = transform_position(transform, glm::vec3(0.0f, y1, 0.0f));
+        append_colored_vertex(body.solid_verts, c_top, solid_color);
+        append_colored_vertex(body.solid_verts, p11, solid_color);
+        append_colored_vertex(body.solid_verts, p01, solid_color);
+
+        const glm::vec3 c_bot = transform_position(transform, glm::vec3(0.0f, y0, 0.0f));
+        append_colored_vertex(body.solid_verts, c_bot, solid_color);
+        append_colored_vertex(body.solid_verts, p00, solid_color);
+        append_colored_vertex(body.solid_verts, p10, solid_color);
+
+        append_colored_vertex(body.line_verts, p00, line_color);
+        append_colored_vertex(body.line_verts, p10, line_color);
+        append_colored_vertex(body.line_verts, p01, line_color);
+        append_colored_vertex(body.line_verts, p11, line_color);
+    }
+
+    // A STEP-style closed cylindrical side face typically has a single seam edge.
+    const float seam_angle = 0.0f;
+    const glm::vec3 b0 = transform_position(transform, local_ring_point(seam_angle, y0));
+    const glm::vec3 b1 = transform_position(transform, local_ring_point(seam_angle, y1));
+    append_colored_vertex(body.line_verts, b0, line_color);
+    append_colored_vertex(body.line_verts, b1, line_color);
 }
 
 struct CubeEdge {
@@ -1175,6 +1250,261 @@ struct BSplineGeom {
     std::vector<float> weights; // optional, same size as control_points
 };
 
+struct BSplineSurfaceRaw {
+    int degree_u = 0;
+    int degree_v = 0;
+    std::vector<std::vector<int>> control_point_ids;
+    std::vector<int> multiplicities_u;
+    std::vector<int> multiplicities_v;
+    std::vector<float> knots_u;
+    std::vector<float> knots_v;
+    std::vector<std::vector<float>> weights;
+};
+
+struct BSplineSurfaceGeom {
+    int degree_u = 0;
+    int degree_v = 0;
+    std::vector<std::vector<glm::vec3>> control_points;
+    std::vector<float> knots_u;
+    std::vector<float> knots_v;
+    std::vector<std::vector<float>> weights;
+};
+
+static int find_bspline_span(float u, int degree, int n, const std::vector<float> &knots)
+{
+    if (n < degree || knots.size() < static_cast<std::size_t>(n + degree + 2)) {
+        return -1;
+    }
+
+    if (u <= knots[static_cast<std::size_t>(degree)]) {
+        return degree;
+    }
+    if (u >= knots[static_cast<std::size_t>(n + 1)] - 1e-7f) {
+        return n;
+    }
+
+    int low = degree;
+    int high = n + 1;
+    int mid = (low + high) / 2;
+    while (u < knots[static_cast<std::size_t>(mid)] ||
+           u >= knots[static_cast<std::size_t>(mid + 1)]) {
+        if (u < knots[static_cast<std::size_t>(mid)]) {
+            high = mid;
+        } else {
+            low = mid;
+        }
+        mid = (low + high) / 2;
+    }
+    return mid;
+}
+
+static bool compute_bspline_basis(int span,
+                                  float u,
+                                  int degree,
+                                  const std::vector<float> &knots,
+                                  std::vector<float> &out_basis)
+{
+    if (degree < 0 || span < degree) {
+        return false;
+    }
+    if (knots.size() < static_cast<std::size_t>(span + degree + 2)) {
+        return false;
+    }
+
+    out_basis.assign(static_cast<std::size_t>(degree + 1), 0.0f);
+    out_basis[0] = 1.0f;
+
+    std::vector<float> left(static_cast<std::size_t>(degree + 1), 0.0f);
+    std::vector<float> right(static_cast<std::size_t>(degree + 1), 0.0f);
+
+    for (int j = 1; j <= degree; ++j) {
+        left[static_cast<std::size_t>(j)] = u - knots[static_cast<std::size_t>(span + 1 - j)];
+        right[static_cast<std::size_t>(j)] = knots[static_cast<std::size_t>(span + j)] - u;
+        float saved = 0.0f;
+        for (int r = 0; r < j; ++r) {
+            const float denom = right[static_cast<std::size_t>(r + 1)] + left[static_cast<std::size_t>(j - r)];
+            const float term = (std::fabs(denom) > 1e-8f)
+                ? (out_basis[static_cast<std::size_t>(r)] / denom)
+                : 0.0f;
+            out_basis[static_cast<std::size_t>(r)] = saved + right[static_cast<std::size_t>(r + 1)] * term;
+            saved = left[static_cast<std::size_t>(j - r)] * term;
+        }
+        out_basis[static_cast<std::size_t>(j)] = saved;
+    }
+
+    return true;
+}
+
+static bool evaluate_bspline_surface(const BSplineSurfaceGeom &sg, float u, float v, glm::vec3 &out)
+{
+    if (sg.control_points.empty() || sg.control_points.front().empty()) {
+        return false;
+    }
+
+    const int nu = static_cast<int>(sg.control_points.size());
+    const int nv = static_cast<int>(sg.control_points.front().size());
+    for (const auto &row : sg.control_points) {
+        if (static_cast<int>(row.size()) != nv) {
+            return false;
+        }
+    }
+
+    const int pu = sg.degree_u;
+    const int pv = sg.degree_v;
+    const int n_u = nu - 1;
+    const int n_v = nv - 1;
+    if (pu < 1 || pv < 1 || n_u < pu || n_v < pv) {
+        return false;
+    }
+    if (sg.knots_u.size() != static_cast<std::size_t>(n_u + pu + 2) ||
+        sg.knots_v.size() != static_cast<std::size_t>(n_v + pv + 2)) {
+        return false;
+    }
+
+    const float u_min = sg.knots_u[static_cast<std::size_t>(pu)];
+    const float u_max = sg.knots_u[static_cast<std::size_t>(n_u + 1)];
+    const float v_min = sg.knots_v[static_cast<std::size_t>(pv)];
+    const float v_max = sg.knots_v[static_cast<std::size_t>(n_v + 1)];
+    if (!(u_min < u_max) || !(v_min < v_max)) {
+        return false;
+    }
+
+    const float uu = std::clamp(u, u_min, u_max);
+    const float vv = std::clamp(v, v_min, v_max);
+
+    const int span_u = find_bspline_span(uu, pu, n_u, sg.knots_u);
+    const int span_v = find_bspline_span(vv, pv, n_v, sg.knots_v);
+    if (span_u < 0 || span_v < 0) {
+        return false;
+    }
+
+    std::vector<float> basis_u;
+    std::vector<float> basis_v;
+    if (!compute_bspline_basis(span_u, uu, pu, sg.knots_u, basis_u)) {
+        return false;
+    }
+    if (!compute_bspline_basis(span_v, vv, pv, sg.knots_v, basis_v)) {
+        return false;
+    }
+
+    const bool rational = !sg.weights.empty()
+        && sg.weights.size() == sg.control_points.size()
+        && sg.weights.front().size() == sg.control_points.front().size();
+
+    if (!rational) {
+        glm::vec3 sum(0.0f);
+        for (int l = 0; l <= pv; ++l) {
+            const int j = span_v - pv + l;
+            if (j < 0 || j > n_v) continue;
+            for (int k = 0; k <= pu; ++k) {
+                const int i = span_u - pu + k;
+                if (i < 0 || i > n_u) continue;
+                const float coeff = basis_u[static_cast<std::size_t>(k)] * basis_v[static_cast<std::size_t>(l)];
+                sum += sg.control_points[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)] * coeff;
+            }
+        }
+        out = sum;
+        return true;
+    }
+
+    glm::vec4 hsum(0.0f);
+    for (int l = 0; l <= pv; ++l) {
+        const int j = span_v - pv + l;
+        if (j < 0 || j > n_v) continue;
+        for (int k = 0; k <= pu; ++k) {
+            const int i = span_u - pu + k;
+            if (i < 0 || i > n_u) continue;
+            const float w = std::max(
+                sg.weights[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)],
+                1e-8f);
+            const float coeff = basis_u[static_cast<std::size_t>(k)] * basis_v[static_cast<std::size_t>(l)] * w;
+            const glm::vec3 &cp = sg.control_points[static_cast<std::size_t>(i)][static_cast<std::size_t>(j)];
+            hsum += glm::vec4(cp * coeff, coeff);
+        }
+    }
+
+    if (std::fabs(hsum.w) <= 1e-8f) {
+        return false;
+    }
+    out = glm::vec3(hsum) / hsum.w;
+    return true;
+}
+
+static void tessellate_bspline_surface(const BSplineSurfaceGeom &sg,
+                                       std::vector<std::array<glm::vec3, 3>> &out_tris)
+{
+    out_tris.clear();
+    if (sg.control_points.empty() || sg.control_points.front().empty()) {
+        return;
+    }
+
+    const int nu = static_cast<int>(sg.control_points.size());
+    const int nv = static_cast<int>(sg.control_points.front().size());
+    const int n_u = nu - 1;
+    const int n_v = nv - 1;
+    if (n_u < sg.degree_u || n_v < sg.degree_v) {
+        return;
+    }
+    if (sg.knots_u.size() != static_cast<std::size_t>(n_u + sg.degree_u + 2) ||
+        sg.knots_v.size() != static_cast<std::size_t>(n_v + sg.degree_v + 2)) {
+        return;
+    }
+
+    const float u_min = sg.knots_u[static_cast<std::size_t>(sg.degree_u)];
+    const float u_max = sg.knots_u[static_cast<std::size_t>(n_u + 1)];
+    const float v_min = sg.knots_v[static_cast<std::size_t>(sg.degree_v)];
+    const float v_max = sg.knots_v[static_cast<std::size_t>(n_v + 1)];
+    if (!(u_min < u_max) || !(v_min < v_max)) {
+        return;
+    }
+
+    const int samples_u = std::clamp(std::max(nu * 10, sg.degree_u * 12), 16, 220);
+    const int samples_v = std::clamp(std::max(nv * 10, sg.degree_v * 10), 8, 160);
+
+    const std::size_t row_stride = static_cast<std::size_t>(samples_v + 1);
+    std::vector<glm::vec3> grid;
+    grid.reserve(static_cast<std::size_t>(samples_u + 1) * row_stride);
+
+    for (int i = 0; i <= samples_u; ++i) {
+        const float tu = static_cast<float>(i) / static_cast<float>(samples_u);
+        const float u = u_min + tu * (u_max - u_min);
+        for (int j = 0; j <= samples_v; ++j) {
+            const float tv = static_cast<float>(j) / static_cast<float>(samples_v);
+            const float v = v_min + tv * (v_max - v_min);
+            glm::vec3 p;
+            if (!evaluate_bspline_surface(sg, u, v, p)) {
+                out_tris.clear();
+                return;
+            }
+            grid.push_back(p);
+        }
+    }
+
+    auto at = [&](int iu, int iv) -> const glm::vec3 & {
+        return grid[static_cast<std::size_t>(iu) * row_stride + static_cast<std::size_t>(iv)];
+    };
+
+    const float eps2 = 1e-14f;
+    for (int i = 0; i < samples_u; ++i) {
+        for (int j = 0; j < samples_v; ++j) {
+            const glm::vec3 &p00 = at(i, j);
+            const glm::vec3 &p10 = at(i + 1, j);
+            const glm::vec3 &p11 = at(i + 1, j + 1);
+            const glm::vec3 &p01 = at(i, j + 1);
+
+            const glm::vec3 n0 = glm::cross(p10 - p00, p11 - p00);
+            if (glm::dot(n0, n0) > eps2) {
+                out_tris.push_back({p00, p10, p11});
+            }
+
+            const glm::vec3 n1 = glm::cross(p11 - p00, p01 - p00);
+            if (glm::dot(n1, n1) > eps2) {
+                out_tris.push_back({p00, p11, p01});
+            }
+        }
+    }
+}
+
 // Tessellate a circular arc into line segments.
 // same_sense=true → CCW sweep from start_pt to end_pt (STEP convention).
 static void tessellate_arc(
@@ -1613,6 +1943,8 @@ bool Renderer::prepare_step_file_import(const std::string &path,
     };
     std::unordered_map<int, BSplineRaw> bspline_raws;
     std::unordered_map<int, BSplineGeom> bspline_geoms;
+    std::unordered_map<int, BSplineSurfaceRaw> bspline_surface_raws;
+    std::unordered_map<int, BSplineSurfaceGeom> bspline_surface_geoms;
     struct CylindricalSurfaceRaw { int placement_id = -1; float radius = 0.0f; };
     std::unordered_map<int, CylindricalSurfaceRaw> cylindrical_surface_raws;
 
@@ -1679,6 +2011,89 @@ bool Renderer::prepare_step_file_import(const std::string &path,
             s = cm + 1;
         }
         return vals;
+    };
+
+    auto parse_id_grid = [](const std::string &token) {
+        std::vector<std::vector<int>> rows;
+        std::string t = trim_copy(token);
+        const std::size_t op = t.find('(');
+        const std::size_t cl = t.rfind(')');
+        if (op == std::string::npos || cl == std::string::npos || cl <= op) return rows;
+
+        const std::string inner = t.substr(op + 1, cl - op - 1);
+        int depth = 0;
+        std::string cur;
+        for (char c : inner) {
+            if (c == '(') {
+                if (depth++ == 0) {
+                    cur.clear();
+                    continue;
+                }
+            } else if (c == ')') {
+                if (--depth == 0) {
+                    std::vector<int> ids;
+                    std::size_t s = 0;
+                    while (s < cur.size()) {
+                        const std::size_t cm = cur.find(',', s);
+                        const std::string part = trim_copy(cm == std::string::npos ? cur.substr(s) : cur.substr(s, cm - s));
+                        int id = -1;
+                        if (parse_step_id_ref(part, id)) ids.push_back(id);
+                        if (cm == std::string::npos) break;
+                        s = cm + 1;
+                    }
+                    if (!ids.empty()) rows.push_back(std::move(ids));
+                    continue;
+                }
+            }
+
+            if (depth >= 1) {
+                cur.push_back(c);
+            }
+        }
+
+        return rows;
+    };
+
+    auto parse_float_grid = [](const std::string &token) {
+        std::vector<std::vector<float>> rows;
+        std::string t = trim_copy(token);
+        const std::size_t op = t.find('(');
+        const std::size_t cl = t.rfind(')');
+        if (op == std::string::npos || cl == std::string::npos || cl <= op) return rows;
+
+        const std::string inner = t.substr(op + 1, cl - op - 1);
+        int depth = 0;
+        std::string cur;
+        for (char c : inner) {
+            if (c == '(') {
+                if (depth++ == 0) {
+                    cur.clear();
+                    continue;
+                }
+            } else if (c == ')') {
+                if (--depth == 0) {
+                    std::vector<float> vals;
+                    std::size_t s = 0;
+                    while (s < cur.size()) {
+                        const std::size_t cm = cur.find(',', s);
+                        const std::string part = trim_copy(cm == std::string::npos ? cur.substr(s) : cur.substr(s, cm - s));
+                        if (!part.empty()) {
+                            try { vals.push_back(std::stof(part)); } catch (...) {}
+                        }
+                        if (cm == std::string::npos) break;
+                        s = cm + 1;
+                    }
+                    if (!vals.empty()) rows.push_back(std::move(vals));
+                    continue;
+                }
+            }
+
+            if (depth >= 1) {
+                cur.push_back(c);
+            }
+        }
+
+        return rows;
     };
 
     auto extract_keyword_entity = [&](const std::string &body,
@@ -1884,6 +2299,43 @@ bool Renderer::prepare_step_file_import(const std::string &path,
                     }
                 }
             }
+        } else if (type == "B_SPLINE_SURFACE_WITH_KNOTS" || body_has_keyword(body, "B_SPLINE_SURFACE_WITH_KNOTS")) {
+            std::string entity = body;
+            if (type != "B_SPLINE_SURFACE_WITH_KNOTS" &&
+                !extract_keyword_entity(body, "B_SPLINE_SURFACE_WITH_KNOTS", entity)) {
+                continue;
+            }
+
+            const auto args = split_step_args(entity);
+            if (args.size() >= 12) {
+                int degree_u = 0;
+                int degree_v = 0;
+                try { degree_u = std::stoi(trim_copy(args[1])); } catch (...) { degree_u = 0; }
+                try { degree_v = std::stoi(trim_copy(args[2])); } catch (...) { degree_v = 0; }
+
+                const auto ctrl_grid = parse_id_grid(args[3]);
+                const auto mult_u = parse_int_list(args[8]);
+                const auto mult_v = parse_int_list(args[9]);
+                const auto knots_u = parse_float_list(args[10]);
+                const auto knots_v = parse_float_list(args[11]);
+
+                if (degree_u > 0 && degree_v > 0 &&
+                    !ctrl_grid.empty() &&
+                    !mult_u.empty() && !mult_v.empty() &&
+                    mult_u.size() == knots_u.size() &&
+                    mult_v.size() == knots_v.size()) {
+                    bspline_surface_raws[id] = {
+                        degree_u,
+                        degree_v,
+                        ctrl_grid,
+                        mult_u,
+                        mult_v,
+                        knots_u,
+                        knots_v,
+                        {}
+                    };
+                }
+            }
         } else if (type == "CYLINDRICAL_SURFACE" || body_has_keyword(body, "CYLINDRICAL_SURFACE")) {
             std::string entity = body;
             if (type != "CYLINDRICAL_SURFACE" && !extract_keyword_entity(body, "CYLINDRICAL_SURFACE", entity)) continue;
@@ -1911,6 +2363,20 @@ bool Renderer::prepare_step_file_import(const std::string &path,
                             (it != bspline_raws.end() ? "yes" : "no"), weights.size());
                     }
                     if (it != bspline_raws.end() && !weights.empty()) {
+                        it->second.weights = weights;
+                    }
+                }
+            }
+        }
+
+        if (body_has_keyword(body, "RATIONAL_B_SPLINE_SURFACE")) {
+            std::string entity;
+            if (extract_keyword_entity(body, "RATIONAL_B_SPLINE_SURFACE", entity)) {
+                const auto args = split_step_args(entity);
+                if (!args.empty()) {
+                    const auto weights = parse_float_grid(args.front());
+                    auto it = bspline_surface_raws.find(id);
+                    if (it != bspline_surface_raws.end() && !weights.empty()) {
                         it->second.weights = weights;
                     }
                 }
@@ -1976,6 +2442,90 @@ bool Renderer::prepare_step_file_import(const std::string &path,
                     sid, sr.control_point_ids.size(), sr.degree, sr.knots.size(), sr.multiplicities.size());
             }
         }
+    }
+
+    for (const auto &[sid, sr] : bspline_surface_raws) {
+        if (sr.control_point_ids.empty() || sr.degree_u <= 0 || sr.degree_v <= 0) {
+            continue;
+        }
+
+        BSplineSurfaceGeom sg;
+        sg.degree_u = sr.degree_u;
+        sg.degree_v = sr.degree_v;
+        sg.control_points.reserve(sr.control_point_ids.size());
+
+        bool valid_grid = true;
+        std::size_t expected_cols = 0;
+        for (const auto &row_ids : sr.control_point_ids) {
+            if (row_ids.empty()) {
+                valid_grid = false;
+                break;
+            }
+
+            if (expected_cols == 0) {
+                expected_cols = row_ids.size();
+            } else if (row_ids.size() != expected_cols) {
+                valid_grid = false;
+                break;
+            }
+
+            std::vector<glm::vec3> row_points;
+            row_points.reserve(row_ids.size());
+            for (int pid : row_ids) {
+                const auto pit = points.find(pid);
+                if (pit == points.end()) {
+                    valid_grid = false;
+                    break;
+                }
+                row_points.push_back(pit->second);
+            }
+            if (!valid_grid) break;
+            sg.control_points.push_back(std::move(row_points));
+        }
+
+        if (!valid_grid || sg.control_points.size() < 2 || expected_cols < 2) {
+            continue;
+        }
+
+        for (std::size_t i = 0; i < sr.knots_u.size(); ++i) {
+            const int m = (i < sr.multiplicities_u.size()) ? std::max(0, sr.multiplicities_u[i]) : 0;
+            for (int k = 0; k < m; ++k) {
+                sg.knots_u.push_back(sr.knots_u[i]);
+            }
+        }
+        for (std::size_t i = 0; i < sr.knots_v.size(); ++i) {
+            const int m = (i < sr.multiplicities_v.size()) ? std::max(0, sr.multiplicities_v[i]) : 0;
+            for (int k = 0; k < m; ++k) {
+                sg.knots_v.push_back(sr.knots_v[i]);
+            }
+        }
+
+        const int n_u = static_cast<int>(sg.control_points.size()) - 1;
+        const int n_v = static_cast<int>(expected_cols) - 1;
+        if (n_u < sg.degree_u || n_v < sg.degree_v) {
+            continue;
+        }
+        if (sg.knots_u.size() != static_cast<std::size_t>(n_u + sg.degree_u + 2) ||
+            sg.knots_v.size() != static_cast<std::size_t>(n_v + sg.degree_v + 2)) {
+            continue;
+        }
+
+        if (!sr.weights.empty()
+            && sr.weights.size() == sg.control_points.size()
+            && sr.weights.front().size() == expected_cols) {
+            bool weights_ok = true;
+            for (const auto &wrow : sr.weights) {
+                if (wrow.size() != expected_cols) {
+                    weights_ok = false;
+                    break;
+                }
+            }
+            if (weights_ok) {
+                sg.weights = sr.weights;
+            }
+        }
+
+        bspline_surface_geoms[sid] = std::move(sg);
     }
 
     auto vertex_pos = [&](int vid, glm::vec3 &out) -> bool {
@@ -2819,6 +3369,8 @@ bool Renderer::prepare_step_file_import(const std::string &path,
         std::vector<std::vector<glm::vec3>> holes;
         std::vector<std::vector<glm::vec3>> loops;
         int cylindrical_surface_id = -1;
+        int bspline_surface_id = -1;
+        int source_face_id = -1;
     };
     struct RawBody {
         std::string label;
@@ -3328,6 +3880,16 @@ bool Renderer::prepare_step_file_import(const std::string &path,
             return outer3.size() >= 3;
         };
 
+        if (face.bspline_surface_id >= 0 && face.holes.empty()) {
+            const auto bs_it = bspline_surface_geoms.find(face.bspline_surface_id);
+            if (bs_it != bspline_surface_geoms.end()) {
+                tessellate_bspline_surface(bs_it->second, out_tris);
+                if (!out_tris.empty()) {
+                    return;
+                }
+            }
+        }
+
         // Dedicated cylindrical meshing using UV unwrapping.
         if (face.cylindrical_surface_id >= 0) {
             const auto cyl_it = cylindrical_surfaces.find(face.cylindrical_surface_id);
@@ -3366,6 +3928,53 @@ bool Renderer::prepare_step_file_import(const std::string &path,
                     return uv;
                 };
 
+                auto align_hole_angles_to_outer = [&](const std::vector<glm::vec2> &outer_uv,
+                                                     std::vector<glm::vec2> &hole_uv) {
+                    if (outer_uv.empty() || hole_uv.empty()) {
+                        return;
+                    }
+
+                    float outer_min = std::numeric_limits<float>::infinity();
+                    float outer_max = -std::numeric_limits<float>::infinity();
+                    float outer_sum = 0.0f;
+                    for (const auto &p : outer_uv) {
+                        outer_min = std::min(outer_min, p.x);
+                        outer_max = std::max(outer_max, p.x);
+                        outer_sum += p.x;
+                    }
+                    const float outer_center = outer_sum / static_cast<float>(outer_uv.size());
+
+                    float hole_sum = 0.0f;
+                    for (const auto &p : hole_uv) {
+                        hole_sum += p.x;
+                    }
+                    const float hole_center = hole_sum / static_cast<float>(hole_uv.size());
+
+                    const float two_pi = glm::two_pi<float>();
+                    const float base_shift = std::round((outer_center - hole_center) / two_pi) * two_pi;
+                    for (auto &p : hole_uv) {
+                        p.x += base_shift;
+                    }
+
+                    float hole_min = std::numeric_limits<float>::infinity();
+                    float hole_max = -std::numeric_limits<float>::infinity();
+                    for (const auto &p : hole_uv) {
+                        hole_min = std::min(hole_min, p.x);
+                        hole_max = std::max(hole_max, p.x);
+                    }
+
+                    while (hole_max < outer_min) {
+                        for (auto &p : hole_uv) p.x += two_pi;
+                        hole_min += two_pi;
+                        hole_max += two_pi;
+                    }
+                    while (hole_min > outer_max) {
+                        for (auto &p : hole_uv) p.x -= two_pi;
+                        hole_min -= two_pi;
+                        hole_max -= two_pi;
+                    }
+                };
+
                 std::vector<glm::vec3> outer3 = face.outer;
                 std::vector<glm::vec2> outer2 = unwrap_cyl_loop(outer3);
                 if (outer3.size() == outer2.size() && outer3.size() >= 3) {
@@ -3384,6 +3993,8 @@ bool Renderer::prepare_step_file_import(const std::string &path,
                             clean_loop_2d3d(hole3, hole2);
                             if (hole3.size() < 3) continue;
 
+                            align_hole_angles_to_outer(outer2, hole2);
+
                             if (signed_area_2d(hole2) > 0.0f) {
                                 std::reverse(hole3.begin(), hole3.end());
                                 std::reverse(hole2.begin(), hole2.end());
@@ -3397,10 +4008,19 @@ bool Renderer::prepare_step_file_import(const std::string &path,
 
                         if (holes_ok) {
                             triangulate_poly_2d3d(outer3, outer2, out_tris);
-                            const std::size_t expected = outer3.size() >= 3 ? (outer3.size() - 2) : 0;
-                            if (out_tris.size() == expected && !out_tris.empty()) {
+                            // For cylindrical faces with holes, strict (n-2) matching can
+                            // be too brittle after loop cleanup/bridging. If we produced
+                            // a non-empty valid UV triangulation, prefer it over strip
+                            // fallback to avoid seam-to-hole artifacts.
+                            if (!out_tris.empty()) {
                                 return;
                             }
+                        }
+
+                        if (!face.holes.empty()) {
+                            std::printf("[STEP][CYL] Face #%d: UV hole triangulation produced no tris (holes=%zu), trying fallback strips\n",
+                                        face.source_face_id,
+                                        face.holes.size());
                         }
                     }
                 }
@@ -3500,6 +4120,11 @@ bool Renderer::prepare_step_file_import(const std::string &path,
                     }
 
                     if (!out_tris.empty()) {
+                        if (!face.holes.empty()) {
+                            std::printf("[STEP][CYL] Face #%d: using strip fallback (tri_count=%zu)\n",
+                                        face.source_face_id,
+                                        out_tris.size());
+                        }
                         return;
                     }
                 }
@@ -3567,6 +4192,11 @@ bool Renderer::prepare_step_file_import(const std::string &path,
                                     out_tris.push_back({a[i], b[in], a[in]});
                                 }
                                 if (!out_tris.empty()) {
+                                    if (!face.holes.empty()) {
+                                        std::printf("[STEP][CYL] Face #%d: using inferred-ring fallback (tri_count=%zu)\n",
+                                                    face.source_face_id,
+                                                    out_tris.size());
+                                    }
                                     return;
                                 }
                             }
@@ -3656,10 +4286,19 @@ bool Renderer::prepare_step_file_import(const std::string &path,
         if (get_type(face_body) != "ADVANCED_FACE") return;
 
         RawFace face;
+        face.source_face_id = face_id;
         for (int r : get_refs(face_body)) {
             if (get_type_of(r) == "CYLINDRICAL_SURFACE") {
                 face.cylindrical_surface_id = r;
-                break;
+            }
+
+            const auto surf_it = entity_map.find(r);
+            if (surf_it != entity_map.end()) {
+                const std::string surf_type = get_type(surf_it->second);
+                if (surf_type == "B_SPLINE_SURFACE_WITH_KNOTS" ||
+                    body_has_keyword(surf_it->second, "B_SPLINE_SURFACE_WITH_KNOTS")) {
+                    face.bspline_surface_id = r;
+                }
             }
         }
 
@@ -4008,10 +4647,75 @@ bool Renderer::apply_prepared_step_import(PreparedImport &&prepared, std::string
 
 bool Renderer::import_step_file(const std::string &path, std::string &error_message)
 {
-    PreparedImport prepared;
-    if (!prepare_step_file_import(path, prepared, error_message, nullptr)) {
-        return false;
+    return import_model_file(path, error_message);
+}
+
+void Renderer::ensure_model_loaders()
+{
+    if (!m_model_loaders.empty()) {
+        return;
     }
+
+    m_model_loaders.push_back(std::make_unique<loaders::StepLoader>());
+}
+
+bool Renderer::import_model_file(const std::string &path, std::string &error_message)
+{
+    ensure_model_loaders();
+
+    for (const auto &loader : m_model_loaders) {
+        if (!loader->can_load(path)) {
+            continue;
+        }
+        return loader->import(*this, path, error_message);
+    }
+
+    error_message = "No loader registered for this file type.";
+    return false;
+}
+
+bool Renderer::load_debug_cylinder_scene(std::string &error_message)
+{
+    PreparedImport prepared;
+    prepared.bodies.reserve(4);
+
+    struct DebugCylinderPlacement {
+        glm::vec3 position;
+        glm::vec3 euler_deg;
+        const char *label;
+    };
+
+    const std::array<DebugCylinderPlacement, 4> placements = {{
+        {{-0.95f,  0.00f,  0.10f}, {  0.0f,   0.0f,   0.0f}, "Body 1"},
+        {{-0.25f,  0.12f, -0.35f}, {  0.0f,   0.0f,  35.0f}, "Body 2"},
+        {{ 0.45f, -0.10f,  0.20f}, { 48.0f,   0.0f,   0.0f}, "Body 3"},
+        {{ 1.05f,  0.06f, -0.20f}, { 34.0f,  18.0f, -26.0f}, "Body 4"},
+    }};
+
+    for (const auto &placement : placements) {
+        PreparedImportBody body;
+        body.item.label = placement.label;
+        body.item.face_count = 3;
+        body.item.edge_count = 3;
+        body.item.visible = true;
+
+        glm::mat4 transform(1.0f);
+        transform = glm::translate(transform, placement.position);
+        transform = glm::rotate(transform, glm::radians(placement.euler_deg.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        transform = glm::rotate(transform, glm::radians(placement.euler_deg.y), glm::vec3(0.0f, 1.0f, 0.0f));
+        transform = glm::rotate(transform, glm::radians(placement.euler_deg.x), glm::vec3(1.0f, 0.0f, 0.0f));
+
+        append_debug_cylinder_mesh(body,
+                                   transform,
+                                   0.22f,
+                                   0.58f,
+                                   64,
+                                   glm::vec3(1.0f, 1.0f, 1.0f),
+                                   glm::vec3(0.18f, 0.18f, 0.18f));
+
+        prepared.bodies.push_back(std::move(body));
+    }
+
     return apply_prepared_step_import(std::move(prepared), error_message);
 }
 

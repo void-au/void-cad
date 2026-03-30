@@ -2,9 +2,11 @@
 #include <epoxy/gl.h>
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <string>
 #include <vector>
 #include "OrbitCamera.h"
+#include "loaders/ModelLoader.h"
 
 class Renderer {
 public:
@@ -148,7 +150,9 @@ public:
     glm::vec2 sketch_anchor_local() const;
 
     // Import a STEP file (edge wireframe only for now) and fit it to view.
+    bool import_model_file(const std::string &path, std::string &error_message);
     bool import_step_file(const std::string &path, std::string &error_message);
+    bool load_debug_cylinder_scene(std::string &error_message);
     bool prepare_step_file_import(const std::string &path,
                                   PreparedImport &out_prepared,
                                   std::string &error_message,
@@ -245,6 +249,9 @@ private:
         GLsizei solid_vertex_count = 0;
     };
     std::vector<ImportedBodyRenderData> m_imported_body_render_data;
+
+    std::vector<std::unique_ptr<loaders::ModelLoader>> m_model_loaders;
+    void ensure_model_loaders();
 
     void release_imported_gpu_buffers();
 
